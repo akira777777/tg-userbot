@@ -1,0 +1,20 @@
+# секреты и доступы — НИКОГДА не в репозитории
+.env
+*.session
+*.session-*
+*.session.unauth
+sessions/
+media_cache/
+
+# личные данные и артефакты работы
+userbot.db
+userbot.db-wal
+userbot.db-shm
+test*.db
+exports/
+logs/
+
+# окружение
+.venv/
+__pycache__/
+*.pyc
