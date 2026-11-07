@@ -46,6 +46,17 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _read_cloud_marker():
+    """Последний результат cloud push (файл-маркер от cloud.py)."""
+    try:
+        p = ROOT / ".cloud_last"
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return None
+
+
 class Bus:
     """Шина логов + словарь задач BUS.jobs (ключ = аккаунт или 'db')."""
 
@@ -136,6 +147,11 @@ def build_args(p: dict):
         return ["groups", "--sync"] + tail, slot, account
     if action == "export":
         return ["export"], slot, account
+    if action == "cloud":
+        op = str(p.get("op") or "push")
+        if op not in {"push", "status", "test"}:
+            raise ValueError("cloud: push|status|test")
+        return ["cloud", op], "cloud", "cloud"
     if action == "watch":
         return ["watch"] + tail, slot, account
     if action == "status":
@@ -398,6 +414,7 @@ def read_state():
                           "account": m["account"]})
         return {
             "db": str(DB), "now": now_iso(), "boot": BOOT,
+            "cloud_last": _read_cloud_marker(),
             "jobs": {k: Bus.public_job(v) for k, v in BUS.jobs.items()},
             "accounts": accounts,
             "media": media,

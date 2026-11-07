@@ -18,3 +18,6 @@ logs/
 .venv/
 __pycache__/
 *.pyc
+
+# маркер последнего облачного push
+.cloud_last

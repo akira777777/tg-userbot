@@ -81,6 +81,7 @@
   <span class="chip">blacklist: <b id="st_bl">–</b></span>
   <span class="chip">покрытие: <b id="st_cov">–</b></span>
   <span class="chip" id="condChip">дирижёр: <b>свободен</b></span>
+  <span class="chip" id="cloudChip">☁ –</span>
   <label style="margin-left:auto;color:var(--mut);font-size:12.5px">активный
     <select id="accSel" style="width:130px;margin:0"></select>
   </label>
@@ -129,6 +130,7 @@
       <button data-act="probe" title="groups --probe: проверить права записи, закрыть непроходимые">🧹 Probe доступов</button>
       <button data-act="privacy" title="максимальная конфиденциальность аккаунта (Nobody везде)">🔒 Приватность</button>
       <button data-act="watch">👁 watch</button>
+      <button data-act="cloud" title="обновить облачное зеркало Supabase (агрегаты, без ников)">☁ зеркало</button>
     </div>
   </div>
 
@@ -284,6 +286,11 @@ async function refresh(){
   $('st_dm').textContent = s.dm_available.toLocaleString('ru');
   $('st_bl').textContent = s.blacklist;
   $('st_cov').textContent = `${s.writable_groups||0} пишут / ${s.covered_groups||0} покрыто / ${s.groups}`;
+  { const cl = s.cloud_last, cj = s.jobs && s.jobs.cloud;
+    // части строки: 'ok'/'ошибка' — литералы, cl.at — ISO-дата из локального маркера cloud.py (фикс. формат); внешнего текста нет
+    $('cloudChip').innerHTML = cj ? '☁ <b class="st-run">push…</b>'
+      : cl ? `☁ ${cl.error?'<b style="color:var(--err)">ошибка</b>':'ok'} ${(cl.at||'').slice(11,16)}`
+      : '☁ не пушено'; }
   const cond = (s.jobs||{}).conductor;
   $('condChip').innerHTML = cond ? `дирижёр: <b class="st-run">${esc(cond.name)} с ${esc((cond.started||'').slice(11,16))} UTC</b> <button class="danger" id="condStop" style="padding:1px 7px;font-size:11.5px">⏹</button>`
                                  : 'дирижёр: <b>свободен</b>';

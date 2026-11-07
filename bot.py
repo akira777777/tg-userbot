@@ -21,6 +21,7 @@ import random
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -782,6 +783,30 @@ def resolve_media(conn, value):
     return str(p)
 
 
+def cmd_cloud(args):
+    """Облачное зеркало Supabase (push|status|test) — делегирует cloud.py."""
+    code = subprocess.call([sys.executable, str(ROOT / "cloud.py"), args.op])
+    sys.exit(code)
+
+
+# команды, после которых стоит обновить зеркало при AUTO_CLOUD=1
+CLOUD_HOOK = {"cmd_broadcast", "cmd_dmsend", "cmd_conduct", "cmd_scrape",
+              "cmd_groups", "cmd_privacy", "cmd_align", "cmd_accounts",
+              "cmd_media", "cmd_blacklist", "cmd_export"}
+
+
+def maybe_cloud_push(args):
+    if os.environ.get("AUTO_CLOUD") != "1":
+        return
+    if getattr(args.func, "__name__", "") not in CLOUD_HOOK:
+        return
+    try:
+        subprocess.Popen([sys.executable, str(ROOT / "cloud.py"), "push"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
+
 async def cmd_media(args):
     """Библиотека медиа поверх «Избранного» Telegram: add/pull/sync/del/list."""
     from telethon.tl import types as tl_types
@@ -1448,6 +1473,10 @@ def build_parser():
     p.add_argument("--limit", type=int, default=30,
                    help="pull: сколько последних сообщений Избранного просмотреть")
     p.set_defaults(func=cmd_media)
+
+    p = sub.add_parser("cloud", help="облачное зеркало Supabase: push|status|test")
+    p.add_argument("op", choices=["push", "status", "test"])
+    p.set_defaults(func=cmd_cloud)
     return pr
 
 
@@ -1463,6 +1492,7 @@ def main():
             asyncio.run(res)
         except KeyboardInterrupt:
             print("\nостановлено пользователем")
+    maybe_cloud_push(args)
 
 
 if __name__ == "__main__":
