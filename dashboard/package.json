@@ -1,15 +1,22 @@
 {
-  "name": "tg-userbot-dashboard",
+  "name": "tg-userbot-mini-app",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "vitest run"
   },
   "dependencies": {
     "next": "15.5.29",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "@telegram-apps/sdk": "^2.4.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.0.0",
+    "jsdom": "^24.0.0"
   },
   "engines": {
     "node": ">=20"

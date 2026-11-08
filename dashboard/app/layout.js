@@ -1,8 +1,8 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "tg-userbot · оркестр",
-  description: "Облачное зеркало оркестра (Supabase)",
+  title: "tg-userbot · мини-ап",
+  description: "Панель управления рассылками userbot через Telegram Mini App",
 };
 
 export default function RootLayout({ children }) {

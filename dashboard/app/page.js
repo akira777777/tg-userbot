@@ -1,178 +1,137 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
 
-const REFRESH_MS = 15000;
-
-function Chip({ kind, children }) {
-  return <span className={"chip " + kind}>{children}</span>;
-}
-
-function statValue(stats, key) {
-  const s = (stats || []).find((x) => x.key === key);
-  return s ? s.value : "—";
-}
+import { useCallback, useEffect, useState } from 'react';
+import MiniAppShell from '@/components/mini-app-shell';
+import ButtonBar from '@/components/button-bar';
+import CommandForm from '@/components/command-form';
+import CommandTimeline from '@/components/command-timeline';
+import OperationsDashboard from '@/components/operations-dashboard';
+import { initTelegramWebApp, isTelegramWebApp, getInitData, setMainButton, hapticImpact } from '@/lib/telegram';
+import { enqueueCommand, createConfirmation, getBootstrap } from '@/lib/api';
 
 export default function Home() {
-  const [token, setToken] = useState(null);
-  const [input, setInput] = useState("");
-  const [data, setData] = useState(null);
-  const [error, setError] = useState("");
-  const [updatedAt, setUpdatedAt] = useState("");
+  const [tgReady, setTgReady] = useState(false);
+  const [initData, setInitData] = useState(null);
+  const [activeAction, setActiveAction] = useState(null);
+  const [bootstrap, setBootstrap] = useState(null);
 
   useEffect(() => {
-    const t = typeof window !== "undefined" ? localStorage.getItem("dash_token") : null;
-    if (t) setToken(t);
+    if (typeof window === 'undefined') return;
+    const tg = isTelegramWebApp();
+    if (tg) {
+      initTelegramWebApp();
+      const data = getInitData();
+      setInitData(data);
+      setTgReady(true);
+    } else {
+      setTgReady(true);
+    }
   }, []);
 
-  const load = useCallback(async () => {
-    if (!token) return;
+  const loadBootstrap = useCallback(async () => {
+    if (!initData) return;
     try {
-      const r = await fetch("/api/data", { headers: { Authorization: "Bearer " + token } });
-      const j = await r.json();
-      if (!r.ok || !j.ok) {
-        if (r.status === 401) {
-          localStorage.removeItem("dash_token");
-          setToken(null);
-        }
-        setError(j.error || ("HTTP " + r.status));
-        return;
-      }
-      setError("");
-      setData(j);
-      setUpdatedAt(new Date().toLocaleTimeString());
+      const data = await getBootstrap(initData);
+      setBootstrap(data);
     } catch (e) {
-      setError(String(e));
+      console.error('bootstrap:', e.message);
     }
-  }, [token]);
+  }, [initData]);
 
   useEffect(() => {
-    if (!token) return;
-    load();
-    const id = setInterval(load, REFRESH_MS);
-    return () => clearInterval(id);
-  }, [token, load]);
+    if (initData) loadBootstrap();
+  }, [initData, loadBootstrap]);
 
-  if (!token) {
+  const handleAction = (btn) => {
+    hapticImpact('light');
+    setActiveAction(btn);
+    setMainButton(btn.kind === 'LIVE' ? 'Подтвердить запуск' : 'Выполнить', () => {
+      if (!initData) return;
+      const command = {
+        kind: btn.id === 'broadcast_chat' || btn.id === 'broadcast_channel' ? 'BROADCAST' : 'READ',
+        mode: btn.kind,
+        account: 'main',
+        payload: {
+          text: '',
+          delay_min: 20,
+          delay_max: 45,
+          group_ids: [],
+          limit: 200,
+          repeat_ok: false,
+          dry_run: btn.kind === 'READ',
+        },
+        idempotency_key: crypto.randomUUID(),
+      };
+
+      if (btn.kind === 'LIVE') {
+        createConfirmation(command, initData)
+          .then((conf) => {
+            if (conf.ok) {
+              command.confirmation_nonce = conf.nonce;
+              return enqueueCommand(command, initData);
+            }
+          })
+          .then((res) => {
+            if (res) console.log('команда поставлена:', res);
+          })
+          .catch((err) => console.error('ошибка:', err.message));
+      } else {
+        enqueueCommand(command, initData)
+          .then((res) => console.log('команда поставлена:', res))
+          .catch((err) => console.error('ошибка:', err.message));
+      }
+    }, true);
+  };
+
+  if (!tgReady) {
     return (
-      <div className="login card">
-        <h1>tg-userbot · оркестр</h1>
-        <p className="meta">Облачное зеркало. Нужен токен доступа (DASH_TOKEN из .env).</p>
-        <input value={input} onChange={(e) => setInput(e.target.value)}
-               placeholder="токен" type="password"
-               onKeyDown={(e) => {
-                 if (e.key === "Enter" && input) {
-                   localStorage.setItem("dash_token", input);
-                   setToken(input);
-                 }
-               }} />
-        <button onClick={() => { if (input) { localStorage.setItem("dash_token", input); setToken(input); } }}>
-          Войти
-        </button>
-        {error && <p className="meta" style={{ color: "#ff8fa3" }}>{error}</p>}
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '40vh', color: '#8b98a9' }}>
+        Подключение к Telegram Web App…
       </div>
     );
   }
 
-  const d = data && data.data;
-  const accs = (d && d.accounts) || [];
-  const groups = (d && d.groups) || [];
-  const campaigns = (d && d.campaigns) || [];
-  const sent = (d && d.sent) || [];
-  const stats = (d && d.stats) || [];
-  const pushedAt = statValue(stats, "pushed_at");
-  const stale = pushedAt !== "—" &&
-    (Date.now() - Date.parse(pushedAt)) > 6 * 3600 * 1000;
-
   return (
-    <div className="wrap">
-      <h1>tg-userbot · оркестр {data &&
-        <span className="meta" style={{ fontWeight: 400 }}> — обновлено {updatedAt}
-          {pushedAt !== "—" && <> · push {pushedAt.replace("T", " ").slice(0, 16)}</>}</span>}
-      </h1>
+    <MiniAppShell>
+      <div style={{ maxWidth: 500, margin: '0 auto' }}>
+        <h1 style={{ fontSize: 20, margin: '0 0 16px', color: '#7fd1ff' }}>tg-userbot · мини-ап</h1>
 
-      {data && data.schema_missing &&
-        <div className="banner">Таблицы <b>tb_*</b> ещё не созданы в Supabase — выполни <span className="mono">supabase/schema.sql</span> в SQL Editor, затем <span className="mono">bot.py cloud push</span>.</div>}
-      {data && !data.schema_missing && accs.length === 0 &&
-        <div className="banner">Зеркало пустое — выполни <span className="mono">bot.py cloud push</span>.</div>}
-      {error && <div className="banner">{error}</div>}
-      {stale && <div className="banner">Последний push старше 6 часов — данные могли устареть.</div>}
-
-      {d && (
-        <>
-          <h2>Обзор</h2>
-          <div className="grid">
-            <div className="card"><div className="n">{statValue(stats, "members_total")}</div><div className="l">участников собрано</div></div>
-            <div className="card"><div className="n">{statValue(stats, "groups_total")}</div><div className="l">групп</div></div>
-            <div className="card"><div className="n">{statValue(stats, "groups_broadcast")}</div><div className="l">в рассылке (активные)</div></div>
-            <div className="card"><div className="n">{statValue(stats, "sent_ok_total")}</div><div className="l">отправлено ok</div></div>
-            <div className="card"><div className="n">{statValue(stats, "sent_fail_total")}</div><div className="l">ошибок доставки</div></div>
-            <div className="card"><div className="n">{statValue(stats, "blacklist_n")}</div><div className="l">в blacklist</div></div>
-            <div className="card"><div className="n">{statValue(stats, "media_n")}</div><div className="l">медиа в библиотеке</div></div>
+        <div style={{ marginBottom: 16, padding: 12, background: 'var(--tg-theme-secondary-bg-color, #121722)', border: '1px solid #2a3548', borderRadius: 10 }}>
+          <div style={{ fontSize: 12, color: '#8b98a9', marginBottom: 6 }}>Статус подключения</div>
+          <div style={{ fontSize: 14, color: '#6ee7a0', fontWeight: 600 }}>
+            {isTelegramWebApp() ? 'Telegram Web App активен' : 'Веб-режим (без Telegram)'}
           </div>
+        </div>
 
-          <h2>Аккаунты</h2>
-          <div className="card"><table>
-            <thead><tr><th>имя</th><th>покрывает</th><th>пишут</th><th>DM сегодня</th><th>бюджет</th><th>flood до</th><th>статус</th></tr></thead>
-            <tbody>{accs.map((a) => (
-              <tr key={a.name}>
-                <td className="mono">{a.name}</td>
-                <td>{a.groups_covered}</td><td>{a.writable_groups}</td>
-                <td>{a.dm_today} / {a.daily_budget}</td>
-                <td>{a.daily_budget}</td>
-                <td className="meta">{a.flood_until || "—"}</td>
-                <td>{a.enabled ? <Chip kind="ok">активен</Chip> : <Chip kind="dim">выключен</Chip>}</td>
-              </tr>))}
-              {!accs.length && <tr><td colSpan="7" className="meta">нет данных</td></tr>}
-            </tbody>
-          </table></div>
+        <ButtonBar onAction={handleAction} />
 
-          <h2>Кампании</h2>
-          <div className="card"><table>
-            <thead><tr><th>#</th><th>тип</th><th>аккаунт</th><th>текст</th><th>ok</th><th>fail</th><th>когда</th></tr></thead>
-            <tbody>{campaigns.map((c) => (
-              <tr key={c.id}>
-                <td>{c.id}</td><td>{c.kind}</td><td className="mono">{c.account}</td>
-                <td>{(c.text || "").slice(0, 60)}</td>
-                <td><Chip kind="ok">{c.ok}</Chip></td>
-                <td>{c.fail ? <Chip kind="err">{c.fail}</Chip> : "0"}</td>
-                <td className="meta">{(c.created_at || "").replace("T", " ").slice(0, 16)}</td>
-              </tr>))}
-              {!campaigns.length && <tr><td colSpan="7" className="meta">пусто</td></tr>}
-            </tbody>
-          </table></div>
+        {activeAction && (
+          <CommandForm
+            action={activeAction}
+            onSubmit={(cmd) => {
+              if (activeAction.kind === 'LIVE') {
+                createConfirmation(cmd, initData)
+                  .then((conf) => {
+                    if (conf.ok) {
+                      cmd.confirmation_nonce = conf.nonce;
+                      return enqueueCommand(cmd, initData);
+                    }
+                  })
+                  .catch((err) => console.error('ошибка подтверждения:', err.message));
+              } else {
+                enqueueCommand(cmd, initData).catch((err) =>
+                  console.error('ошибка отправки:', err.message)
+                );
+              }
+              setActiveAction(null);
+            }}
+            initData={initData}
+          />
+        )}
 
-          <h2>Живой журнал (последние {sent.length})</h2>
-          <div className="card"><table>
-            <thead><tr><th>кампания</th><th>цель</th><th>аккаунт</th><th>статус</th><th>время</th></tr></thead>
-            <tbody>{sent.map((s, i) => (
-              <tr key={i}>
-                <td>{s.campaign}</td><td>{s.target}</td><td className="mono">{s.account}</td>
-                <td>{s.status === "ok" ? <Chip kind="ok">ok</Chip> : <Chip kind="warn">{s.status}</Chip>}</td>
-                <td className="meta">{(s.ts || "").replace("T", " ").slice(5, 16)}</td>
-              </tr>))}
-              {!sent.length && <tr><td colSpan="5" className="meta">пусто</td></tr>}
-            </tbody>
-          </table></div>
-
-          <h2>Группы ({groups.length})</h2>
-          <div className="card"><table>
-            <thead><tr><th>id</th><th>название</th><th>тип</th><th>участников</th><th>права</th><th>в рассылке</th></tr></thead>
-            <tbody>{groups.map((g) => (
-              <tr key={g.id}>
-                <td className="meta">{g.id}</td>
-                <td>{g.title}{g.username ? <span className="meta"> @{g.username}</span> : null}</td>
-                <td>{g.gtype}</td>
-                <td>{g.members_collected}</td>
-                <td>{g.can_write_agg === "yes" ? <Chip kind="ok">пишут</Chip>
-                  : g.can_write_agg === "mixed" ? <Chip kind="warn">частично</Chip>
-                  : <Chip kind="dim">нет</Chip>}</td>
-                <td>{g.in_broadcast ? "✅" : "—"}</td>
-              </tr>))}
-              {!groups.length && <tr><td colSpan="6" className="meta">пусто</td></tr>}
-            </tbody>
-          </table></div>
-        </>
-      )}
-    </div>
+        <CommandTimeline initData={initData} />
+        <OperationsDashboard />
+      </div>
+    </MiniAppShell>
   );
 }

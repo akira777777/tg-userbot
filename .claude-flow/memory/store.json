@@ -62,6 +62,69 @@
       "lastAccessed": "2026-11-08T05:16:40.930Z",
       "accessCount": 0,
       "expiresAt": "2026-12-08T05:16:40.930Z"
+    },
+    "cmd-1794115285441": {
+      "key": "cmd-1794115285441",
+      "value": "{\"command\":\"Get-Content -Raw 'C:\\\\Users\\\\novra\\\\.agents\\\\skills\\\\architecture\\\\context-discovery.md'; Get-Content -Raw 'C:\\\\Users\\\\novra\\\\.agents\\\\skills\\\\architecture\\\\trade-off-analysis.md'; Write-Output '---CURRENT EXECUTABLES---'; Get-Command node,npm,python,docker -ErrorAction SilentlyContinue | Select-Object Name,Source,Version | Format-Table -AutoSize; Write-Output '---DEPENDENCIES INSTALLED---'; .\\\\.venv\\\\Scripts\\\\python.exe -m pip show telethon aiohttp python-telegram-bot pytest pytest-cov ruff mypy pyright 2>$null; Write-Output '---NODE AUDIT/BUILD PRECHECK---'; Push-Location dashboard; npm ls --depth=0; npm audit --omit=dev --audit-level=high; Pop-Location; Write-Output '---SYNTAX---'; .\\\\.venv\\\\Scripts\\\\python.exe -m py_compile bot.py web.py cloud.py; Write-Output '---CI REFERENCE VALIDATION---'; rg -n 'src/tg_userbot|poetry|tests/' pyproject.toml Makefile Dockerfile docker-compose*.yml .github\\\\workflows\\\\ci.yml\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:21:25.441Z",
+      "lastAccessed": "2026-11-08T05:21:25.441Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:21:25.441Z"
+    },
+    "cmd-1794115307707": {
+      "key": "cmd-1794115307707",
+      "value": "{\"command\":\"Write-Output '---ISOLATED LOGIC TESTS---'; .\\\\.venv\\\\Scripts\\\\python.exe test_suite.py; $suite=$LASTEXITCODE; .\\\\.venv\\\\Scripts\\\\python.exe test_orchestra.py; $orchestra=$LASTEXITCODE; Write-Output \\\"suite_exit=$suite orchestra_exit=$orchestra\\\"; Write-Output '---DASHBOARD PRODUCTION BUILD---'; Push-Location dashboard; npm run build; $build=$LASTEXITCODE; Pop-Location; Write-Output \\\"dashboard_build_exit=$build\\\"; if ($suite -ne 0 -or $orchestra -ne 0 -or $build -ne 0) { exit 1 }\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:21:47.707Z",
+      "lastAccessed": "2026-11-08T05:21:47.707Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:21:47.707Z"
+    },
+    "cmd-1794115592704": {
+      "key": "cmd-1794115592704",
+      "value": "{\"command\":\"Get-Content -Raw 'C:\\\\Users\\\\novra\\\\.agents\\\\skills\\\\systematic-debugging\\\\SKILL.md'; Get-Content -Raw 'C:\\\\Users\\\\novra\\\\.agents\\\\skills\\\\andrej-karpathy\\\\SKILL.md'; Get-Content -Raw 'C:\\\\Users\\\\novra\\\\.agents\\\\skills\\\\context7-mcp\\\\SKILL.md'\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:26:32.704Z",
+      "lastAccessed": "2026-11-08T05:26:32.704Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:26:32.704Z"
+    },
+    "cmd-1794115753590": {
+      "key": "cmd-1794115753590",
+      "value": "{\"command\":\".\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests -q\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:29:13.590Z",
+      "lastAccessed": "2026-11-08T05:29:13.590Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:29:13.590Z"
+    },
+    "cmd-1794115777804": {
+      "key": "cmd-1794115777804",
+      "value": "{\"command\":\".\\\\.venv\\\\Scripts\\\\python.exe -m pytest; .\\\\.venv\\\\Scripts\\\\python.exe -m py_compile control\\\\*.py; .\\\\.venv\\\\Scripts\\\\python.exe -m ruff check control tests\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:29:37.804Z",
+      "lastAccessed": "2026-11-08T05:29:37.804Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:29:37.804Z"
+    },
+    "cmd-1794115810558": {
+      "key": "cmd-1794115810558",
+      "value": "{\"command\":\".\\\\.venv\\\\Scripts\\\\python.exe -m ruff check --fix control tests; .\\\\.venv\\\\Scripts\\\\python.exe -m ruff format --check control tests; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest; git diff --check; git status --short\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:30:10.558Z",
+      "lastAccessed": "2026-11-08T05:30:10.558Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:30:10.558Z"
+    },
+    "cmd-1794115927031": {
+      "key": "cmd-1794115927031",
+      "value": "{\"command\":\"Get-Content -Raw control\\\\models.py; Get-Content -Raw control\\\\policy.py; Get-Content -Raw control\\\\queue.py; Get-Content -Raw control\\\\config.py; Write-Output '---DASHBOARD GIT STATUS---'; git status --short dashboard supabase pyproject.toml tests; Write-Output '---CURRENT DASHBOARD SOURCES---'; Get-Content -Raw dashboard\\\\app\\\\page.js; Get-Content -Raw dashboard\\\\app\\\\api\\\\data\\\\route.js; Get-Content -Raw dashboard\\\\app\\\\layout.js; Get-Content -Raw dashboard\\\\app\\\\globals.css\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:32:07.031Z",
+      "lastAccessed": "2026-11-08T05:32:07.031Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:32:07.031Z"
     }
   },
   "version": "3.0.0"

@@ -1,2 +1,6 @@
 telethon>=1.36
 aiohttp>=3.9
+python-telegram-bot>=21.0
+supabase>=2.0
+pydantic>=2.5
+python-dotenv>=1.0

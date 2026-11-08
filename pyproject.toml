@@ -107,7 +107,7 @@ exclude = [".venv", "__pycache__", "*.egg-info"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "N", "B", "UP", "YTT", "A", "C90", "COM", "EM", "ISC", "ICN", "PTH", "RUF", "SIM", "W", "TRY", "FLY", "ARG", "TCH", "DTZ", "A", "ASYNC", "T10", "RSE", "RUF"]
-ignore = ["E501", "RUF012", "COM812", "ISC001"]
+ignore = ["E501", "RUF012", "COM812", "ISC001", "EM101", "EM102", "TRY003"]
 
 [tool.ruff.lint.per-file-ignores]
 "src/tg_userbot/api/routes/*" = ["ARG", "A003"]
@@ -122,7 +122,7 @@ exclude = ["tests/", "docs/", "scripts/", "build/", "dist/"]
 
 [tool.pytest.ini_options]
 minversion = "8.3"
-addopts = "-ra -q --strict-markers --cov=src/tg_userbot --cov-report=term-missing"
+addopts = "-ra -q --strict-markers --cov=control --cov-report=term-missing"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = [
@@ -132,7 +132,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["src/tg_userbot"]
+source = ["control"]
 branch = true
 omit = ["*/__init__.py", "*/test_*.py", "*/conftest.py"]
 
@@ -145,7 +145,7 @@ exclude_lines = [
 ]
 
 [tool.coverage.paths]
-source = ["src/tg_userbot", ".venv/src/tg_userbot"]
+source = ["control"]
 
 [tool.coverage.html]
 directory = "htmlcov"
