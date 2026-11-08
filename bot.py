@@ -1103,27 +1103,30 @@ def cmd_status(args):
 
 def cmd_blacklist(args):
     conn = connect()
-    if args.cmd == "list":
-        rows = conn.execute("SELECT * FROM blacklist").fetchall()
-        for r in rows:
-            print(f"  {r['user_id']} @{r['username'] or '-'} ({r['reason']})")
-        if not rows:
-            print("  пусто")
-        return
-    v = args.value.lstrip("@")
-    if v.isdigit():
-        uid, uname = int(v), ""
-    else:
-        row = conn.execute("SELECT user_id, username FROM members "
-                           "WHERE lower(username)=lower(?)", (v,)).fetchone()
-        if not row:
-            sys.exit(f"Ник @{v} не найден в базе — добавляй по user_id "
-                     f"или сначала выполни scrape")
-        uid, uname = row["user_id"], row["username"]
-    conn.execute("INSERT OR IGNORE INTO blacklist(user_id,username,reason,ts) VALUES(?,?,?,?)",
-                 (uid, uname, args.reason, now_iso()))
-    conn.commit()
-    print(f"занесён: id={uid} @{uname or '-'}")
+    try:
+        if args.cmd == "list":
+            rows = conn.execute("SELECT * FROM blacklist").fetchall()
+            for r in rows:
+                print(f"  {r['user_id']} @{r['username'] or '-'} ({r['reason']})")
+            if not rows:
+                print("  пусто")
+            return
+        v = args.value.lstrip("@")
+        if v.isdigit():
+            uid, uname = int(v), ""
+        else:
+            row = conn.execute("SELECT user_id, username FROM members "
+                               "WHERE lower(username)=lower(?)", (v,)).fetchone()
+            if not row:
+                sys.exit(f"Ник @{v} не найден в базе — добавляй по user_id "
+                         f"или сначала выполни scrape")
+            uid, uname = row["user_id"], row["username"]
+        conn.execute("INSERT OR IGNORE INTO blacklist(user_id,username,reason,ts) VALUES(?,?,?,?)",
+                     (uid, uname, args.reason, now_iso()))
+        conn.commit()
+        print(f"занесён: id={uid} @{uname or '-'}")
+    finally:
+        conn.close()
 
 
 def cooldown_remaining(p, now_dt=None):

@@ -39,6 +39,7 @@ dependencies = [
     "rich>=13.9.4",
     "python-dateutil>=2.9.0.post0",
     "aio-pika>=9.5.1",
+    "telethon>=1.36",
 ]
 
 [project.optional-dependencies]
@@ -122,13 +123,15 @@ exclude = ["tests/", "docs/", "scripts/", "build/", "dist/"]
 
 [tool.pytest.ini_options]
 minversion = "8.3"
+pythonpath = ["."]
 addopts = "-ra -q --strict-markers --cov=control --cov-report=term-missing"
-testpaths = ["tests"]
+testpaths = ["tests", "test_suite.py"]
 asyncio_mode = "auto"
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning",
     "ignore::PendingDeprecationWarning",
+    "ignore::coverage.exceptions.CoverageWarning",
 ]
 
 [tool.coverage.run]
