@@ -152,6 +152,15 @@ alter table control_command_events force row level security;
 alter table control_confirmations enable row level security;
 alter table control_confirmations force row level security;
 
+-- Обеспечиваем существование роли service_role для совместимости с vanilla PostgreSQL 16
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'service_role') then
+    create role service_role nologin;
+  end if;
+  grant service_role to current_user;
+end $$;
+
 drop policy if exists service_all on control_commands;
 create policy service_all on control_commands for all to service_role using (true) with check (true);
 
@@ -169,14 +178,16 @@ alter table control_command_events replica identity full;
 
 do $$
 begin
-  begin
-    alter publication supabase_realtime add table control_commands;
-  exception when duplicate_object then null;
-  end;
-  begin
-    alter publication supabase_realtime add table control_command_events;
-  exception when duplicate_object then null;
-  end;
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    begin
+      alter publication supabase_realtime add table control_commands;
+    exception when duplicate_object or undefined_object then null;
+    end;
+    begin
+      alter publication supabase_realtime add table control_command_events;
+    exception when duplicate_object or undefined_object then null;
+    end;
+  end if;
 end $$;
 
 -- --------------------------------------------------------
