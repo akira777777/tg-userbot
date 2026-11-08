@@ -431,6 +431,51 @@
       "lastAccessed": "2026-11-08T05:54:14.514Z",
       "accessCount": 0,
       "expiresAt": "2026-12-08T05:54:14.514Z"
+    },
+    "cmd-1794117312956": {
+      "key": "cmd-1794117312956",
+      "value": "{\"command\":\"Push-Location dashboard; vercel inspect https://tg-userbot-dashboard-ou3q63zv7-akirtas-projects.vercel.app; Pop-Location\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:55:12.956Z",
+      "lastAccessed": "2026-11-08T05:55:12.956Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:55:12.956Z"
+    },
+    "cmd-1794117322843": {
+      "key": "cmd-1794117322843",
+      "value": "{\"command\":\"Push-Location dashboard; vercel inspect https://tg-userbot-dashboard-ou3q63zv7-akirtas-projects.vercel.app --scope akirtas-projects; Pop-Location\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:55:22.843Z",
+      "lastAccessed": "2026-11-08T05:55:22.843Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:55:22.843Z"
+    },
+    "cmd-1794117343551": {
+      "key": "cmd-1794117343551",
+      "value": "{\"command\":\".\\\\.venv\\\\Scripts\\\\python.exe -m pip show supabase python-telegram-bot | Select-String -Pattern '^(Name|Version):'\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:55:43.551Z",
+      "lastAccessed": "2026-11-08T05:55:43.551Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:55:43.551Z"
+    },
+    "cmd-1794117366775": {
+      "key": "cmd-1794117366775",
+      "value": "{\"command\":\"Get-Command supabase -ErrorAction SilentlyContinue | Select-Object Name,Source | Format-Table -AutoSize; if (Get-Command supabase -ErrorAction SilentlyContinue) { supabase --version; supabase projects list }\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:56:06.775Z",
+      "lastAccessed": "2026-11-08T05:56:06.775Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:56:06.775Z"
+    },
+    "cmd-1794117381109": {
+      "key": "cmd-1794117381109",
+      "value": "{\"command\":\"& .\\\\.venv\\\\Scripts\\\\python.exe -c 'import os,sys,urllib.request; cfg={}; [cfg.__setitem__(*line.strip().split(\\\"=\\\",1)) for line in open(\\\".env\\\", encoding=\\\"utf-8\\\") if \\\"=\\\" in line and not line.lstrip().startswith(\\\"#\\\")]; req=urllib.request.Request(cfg[\\\"SUPABASE_URL\\\"].rstrip(\\\"/\\\")+\\\"/rest/v1/control_commands?select=id\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:56:21.109Z",
+      "lastAccessed": "2026-11-08T05:56:21.109Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:56:21.109Z"
     }
   },
   "version": "3.0.0"
