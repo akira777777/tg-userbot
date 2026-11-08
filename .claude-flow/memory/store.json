@@ -125,6 +125,42 @@
       "lastAccessed": "2026-11-08T05:32:07.031Z",
       "accessCount": 0,
       "expiresAt": "2026-12-08T05:32:07.031Z"
+    },
+    "cmd-1794116166066": {
+      "key": "cmd-1794116166066",
+      "value": "{\"command\":\"Get-Content -Raw dashboard\\\\app\\\\layout.js; Get-Content -Raw dashboard\\\\app\\\\globals.css; git diff -- dashboard\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:36:06.066Z",
+      "lastAccessed": "2026-11-08T05:36:06.066Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:36:06.066Z"
+    },
+    "cmd-1794116197336": {
+      "key": "cmd-1794116197336",
+      "value": "{\"command\":\"Push-Location dashboard; npm run build; $exit=$LASTEXITCODE; Pop-Location; exit $exit\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:36:37.336Z",
+      "lastAccessed": "2026-11-08T05:36:37.336Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:36:37.336Z"
+    },
+    "cmd-1794116218980": {
+      "key": "cmd-1794116218980",
+      "value": "{\"command\":\"Get-Content -Raw dashboard\\\\app\\\\api\\\\control\\\\commands\\\\route.js; Get-Content -Raw dashboard\\\\app\\\\api\\\\control\\\\confirmations\\\\route.js; Get-Content -Raw dashboard\\\\app\\\\api\\\\control\\\\commands\\\\[id]\\\\route.js; Get-Content -Raw dashboard\\\\app\\\\api\\\\control\\\\session\\\\route.js\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:36:58.980Z",
+      "lastAccessed": "2026-11-08T05:36:58.980Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:36:58.980Z"
+    },
+    "cmd-1794116328064": {
+      "key": "cmd-1794116328064",
+      "value": "{\"command\":\"Get-Content -Raw dashboard\\\\lib\\\\api.js; Get-Content -LiteralPath 'dashboard\\\\app\\\\api\\\\control\\\\commands\\\\[id]\\\\route.js' -Raw; Get-Content -Raw dashboard\\\\app\\\\api\\\\control\\\\confirmations\\\\route.js\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:38:48.064Z",
+      "lastAccessed": "2026-11-08T05:38:48.064Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:38:48.064Z"
     }
   },
   "version": "3.0.0"

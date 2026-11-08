@@ -6,6 +6,7 @@ import json
 import hashlib
 import hmac
 from datetime import datetime, timezone, timedelta
+from uuid import uuid4
 
 from control.models import (
     CommandKind,
@@ -21,7 +22,11 @@ from control.models import (
 from control.policy import CommandPolicy, Redactor
 from control.privacy_forward import ForwardPrivacyManager
 from control.account_alias import AccountAliasMapper
-from control.telegram_auth import verify_web_app_init_data, is_owner
+from control.telegram_auth import verify_init_data, TelegramAuthError
+from control.config import ControlSettings
+
+def is_owner(identity: TelegramIdentity, settings: ControlSettings) -> bool:
+    return identity.telegram_user_id in settings.owner_telegram_ids
 
 
 def test_broadcast_payload_defaults_dry_run():
@@ -80,7 +85,7 @@ def test_account_alias_mapping():
     assert a2.internal_name == "work2"
 
 
-def test_forward_privacy_disabled_uses_forward():
+def test_forward_privacy_disabled_keeps_forward():
     mgr = ForwardPrivacyManager(enabled=False)
     data = {"forward_from": {"id": 123}, "text": "hello"}
     result = mgr.strip_message_dict(data)
@@ -113,48 +118,50 @@ def test_telegram_identity_creation():
     assert identity.username == "testuser"
 
 
-def test_verify_init_data_tampered_hash():
-    # Формируем корректные initData, затем портим hash
-    bot_token = "123456:TEST_TOKEN"
-    auth_date = int(datetime.now(timezone.utc).timestamp())
-    user_json = json.dumps({"id": 987654321, "username": "test", "first_name": "Test"})
+def _make_init_data(bot_token: str, user_id: int, auth_date: int | None = None) -> str:
+    if auth_date is None:
+        auth_date = int(datetime.now(timezone.utc).timestamp())
+    user_json = json.dumps({"id": user_id, "username": "test", "first_name": "Test"})
     data_check = f"auth_date={auth_date}\nuser={user_json}"
-    secret_key = hashlib.sha256(bot_token.encode()).digest()
-    good_hash = hmac.new(secret_key, data_check.encode(), hashlib.sha256).hexdigest()
-    init_data = f"auth_date={auth_date}&hash={good_hash}&user={user_json}"
+    # Официальный алгоритм Telegram WebApp:
+    # secret_key = HMAC-SHA256(key="WebAppData", msg=bot_token)
+    # hash = HMAC-SHA256(key=secret_key, msg=data_check_string)
+    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
+    good_hash = hmac.new(secret_key, data_check.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"auth_date={auth_date}&hash={good_hash}&user={user_json}"
 
-    # Корректные initData должны пройти
-    identity = verify_web_app_init_data(init_data, bot_token)
+
+def test_verify_init_data_valid():
+    bot_token = "123456:TEST_TOKEN"
+    init_data = _make_init_data(bot_token, 987654321)
+    identity = verify_init_data(init_data, bot_token)
     assert identity.telegram_user_id == 987654321
+    assert identity.username == "test"
 
-    # Порченый hash должен быть отвергнут
-    bad_init = init_data.replace(good_hash, "0" * 64)
+
+def test_verify_init_data_tampered_hash():
+    bot_token = "123456:TEST_TOKEN"
+    init_data = _make_init_data(bot_token, 987654321)
+    bad_init = init_data.replace(init_data.split("&hash=")[1].split("&")[0], "0" * 64)
     try:
-        verify_web_app_init_data(bad_init, bot_token)
+        verify_init_data(bad_init, bot_token)
         raise AssertionError("ожидалась ошибка при порченом hash")
-    except ValueError:
+    except TelegramAuthError:
         pass
 
 
 def test_verify_init_data_stale():
     bot_token = "123456:TEST_TOKEN"
     old_date = int((datetime.now(timezone.utc) - timedelta(hours=2)).timestamp())
-    user_json = json.dumps({"id": 111, "username": "old", "first_name": "Old"})
-    data_check = f"auth_date={old_date}\nuser={user_json}"
-    secret_key = hashlib.sha256(bot_token.encode()).digest()
-    good_hash = hmac.new(secret_key, data_check.encode(), hashlib.sha256).hexdigest()
-    init_data = f"auth_date={old_date}&hash={good_hash}&user={user_json}"
-
+    init_data = _make_init_data(bot_token, 111, auth_date=old_date)
     try:
-        verify_web_app_init_data(init_data, bot_token, max_age_seconds=300)
+        verify_init_data(init_data, bot_token, max_age_seconds=300)
         raise AssertionError("ожидалась ошибка при устаревших initData")
-    except ValueError:
+    except TelegramAuthError:
         pass
 
 
 def test_is_owner_allowlist():
-    from control.config import ControlSettings
-
     settings = ControlSettings(
         bot_token="x",
         mini_app_url="https://example.com",
@@ -179,8 +186,6 @@ def test_is_owner_allowlist():
 
 
 def test_policy_requires_confirmation_for_live():
-    from control.config import ControlSettings
-
     settings = ControlSettings(
         bot_token="x",
         mini_app_url="https://example.com",
@@ -195,8 +200,6 @@ def test_policy_requires_confirmation_for_live():
 
 
 def test_policy_is_read_only():
-    from control.config import ControlSettings
-
     settings = ControlSettings(
         bot_token="x",
         mini_app_url="https://example.com",
@@ -213,7 +216,7 @@ def test_policy_is_read_only():
 
 def test_confirmation_intent_creation():
     ci = ConfirmationIntent(
-        nonce=__import__("uuid").uuid4(),
+        nonce=uuid4(),
         owner_telegram_id=123,
         request_digest="abc123",
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),

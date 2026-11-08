@@ -1,67 +1,37 @@
-/**
- * GET /api/control/commands/:id — детальная информация о команде
- * POST /api/control/commands/:id/cancel — отмена команды владельцем
- */
+import { requireOwnerSession } from "../../../../../lib/control-auth";
+import { getCommand, cancelCommand } from "../../../../../lib/control-queue";
 
-import { cookies } from 'next/headers';
+export const dynamic = "force-dynamic";
 
-export const dynamic = 'force-dynamic';
-
-function readSession() {
-  const cookieStore = cookies();
-  const raw = cookieStore.get('control_session')?.value;
-  if (!raw) return null;
+export async function GET(request, { params }) {
   try {
-    return JSON.parse(decodeURIComponent(raw));
-  } catch (e) {
-    return null;
+    const { id: ownerId } = await requireOwnerSession();
+    const command = await getCommand({ ownerId, commandId: params.id });
+    if (!command) return Response.json({ ok: false, error: "команда не найдена" }, { status: 404 });
+    return Response.json({ ok: true, command });
+  } catch (error) {
+    const unauthenticated = error.message === "Unauthenticated";
+    return Response.json(
+      { ok: false, error: unauthenticated ? "Необходим вход через Telegram." : "ошибка загрузки" },
+      { status: unauthenticated ? 401 : 500 }
+    );
   }
 }
 
-function fail(code, msg) {
-  return new Response(JSON.stringify({ ok: false, error: msg }), {
-    status: code,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-export async function GET(req, { params }) {
-  const session = readSession();
-  if (!session || !session.telegram_user_id) {
-    return fail(401, 'требуется сессия');
+export async function POST(request, { params }) {
+  // POST сюда используется для /cancel действия (упрощённый маршрут без вложенного /cancel)
+  try {
+    const { id: ownerId } = await requireOwnerSession();
+    const cancelled = await cancelCommand({ ownerId, commandId: params.id });
+    if (!cancelled) {
+      return Response.json({ ok: false, error: "команду нельзя отменить (уже выполняется или завершена)" }, { status: 409 });
+    }
+    return Response.json({ ok: true, command_id: params.id, status: "CANCELLED" });
+  } catch (error) {
+    const unauthenticated = error.message === "Unauthenticated";
+    return Response.json(
+      { ok: false, error: unauthenticated ? "Необходим вход через Telegram." : "ошибка отмены" },
+      { status: unauthenticated ? 401 : 500 }
+    );
   }
-
-  const { id } = params;
-
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      command: {
-        id,
-        owner_telegram_id: session.telegram_user_id,
-        status: 'PENDING',
-        note: 'детальная информация загружается через Supabase клиент',
-      },
-    }),
-    { headers: { 'content-type': 'application/json' } }
-  );
-}
-
-export async function POST(req, { params }) {
-  const session = readSession();
-  if (!session || !session.telegram_user_id) {
-    return fail(401, 'требуется сессия');
-  }
-
-  const { id } = params;
-
-  return new Response(
-    JSON.stringify({
-      ok: true,
-      command_id: id,
-      status: 'CANCELLED',
-      message: 'команда отменена владельцем',
-    }),
-    { headers: { 'content-type': 'application/json' } }
-  );
 }

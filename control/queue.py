@@ -24,7 +24,7 @@ class QueueRepository:
     def __init__(self, settings: ControlSettings) -> None:
         self._settings = settings
         self._client: Client | None = None
-        if create_client is not None:
+        if create_client is not None and settings.supabase_url and settings.supabase_service_role_key:
             self._client = create_client(
                 settings.supabase_url,
                 settings.supabase_service_role_key,

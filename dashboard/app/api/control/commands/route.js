@@ -1,145 +1,60 @@
-/**
- * GET /api/control/commands — история команд владельца
- * POST /api/control/commands — поставить новую команду в очередь (через Supabase RPC)
- */
+import { requireOwnerSession } from "../../../../lib/control-auth";
+import { enqueueCommand, listCommands, requiresConfirmation } from "../../../../lib/control-queue";
 
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+export const dynamic = "force-dynamic";
 
-export const dynamic = 'force-dynamic';
+const LIVE_KINDS = new Set(["BROADCAST", "DMSEND", "CONDUCT"]);
+const VALID_KINDS = new Set([
+  "STATUS", "GROUPS", "CAMPAIGNS", "MEDIA_LIST", "BLACKLIST_ADD",
+  "BROADCAST", "DMSEND", "CONDUCT", "STOP",
+]);
 
-function readSession() {
-  const cookieStore = cookies();
-  const raw = cookieStore.get('control_session')?.value;
-  if (!raw) return null;
+export async function GET(request) {
   try {
-    return JSON.parse(decodeURIComponent(raw));
-  } catch (e) {
-    return null;
+    const { id: ownerId } = await requireOwnerSession();
+    const { searchParams } = new URL(request.url);
+    const limit = Math.min(parseInt(searchParams.get("limit") || "50", 10), 100);
+    const offset = parseInt(searchParams.get("offset") || "0", 10);
+    const commands = await listCommands({ ownerId, limit, offset });
+    return Response.json({ ok: true, commands });
+  } catch (error) {
+    const unauthenticated = error.message === "Unauthenticated";
+    return Response.json(
+      { ok: false, error: unauthenticated ? "Необходим вход через Telegram." : "Не удалось загрузить команды." },
+      { status: unauthenticated ? 401 : 500 }
+    );
   }
 }
 
-function fail(code, msg) {
-  return new Response(JSON.stringify({ ok: false, error: msg }), {
-    status: code,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-async function getSupabaseClient() {
-  const cookieStore = cookies();
-  return createServerClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SECRET_KEY,
-    {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll().map((c) => ({ name: c.name, value: c.value }));
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            cookieStore.set(name, value, options)
-          );
-        },
-      },
-    }
-  );
-}
-
-export async function GET(req) {
-  const session = readSession();
-  if (!session || !session.telegram_user_id) {
-    return fail(401, 'требуется сессия');
-  }
-
-  const sb = await getSupabaseClient();
-  const { searchParams } = new URL(req.url);
-  const limit = Math.min(parseInt(searchParams.get('limit') || '50', 10), 100);
-  const offset = parseInt(searchParams.get('offset') || '0', 10);
-
-  const { data, error } = await sb
-    .from('control_commands')
-    .select('*')
-    .eq('owner_telegram_id', session.telegram_user_id)
-    .order('created_at', { ascending: false })
-    .range(offset, offset + limit - 1);
-
-  if (error) {
-    return fail(500, error.message);
-  }
-
-  return new Response(
-    JSON.stringify({ ok: true, commands: data || [] }),
-    { headers: { 'content-type': 'application/json' } }
-  );
-}
-
-export async function POST(req) {
-  const session = readSession();
-  if (!session || !session.telegram_user_id) {
-    return fail(401, 'требуется сессия');
+export async function POST(request) {
+  let ownerId;
+  try {
+    ({ id: ownerId } = await requireOwnerSession());
+  } catch (error) {
+    return Response.json({ ok: false, error: "Необходим вход через Telegram." }, { status: 401 });
   }
 
   let body;
   try {
-    body = await req.json();
-  } catch (e) {
-    return fail(400, 'неверный JSON');
+    body = await request.json();
+  } catch (error) {
+    return Response.json({ ok: false, error: "неверный JSON" }, { status: 400 });
   }
 
-  const { kind, mode, account, payload, idempotency_key, confirmation_nonce } = body || {};
+  const { kind, mode, account, payload, idempotency_key: idempotencyKey, confirmation_nonce: confirmationNonce } = body || {};
 
-  if (!kind || !mode) {
-    return fail(400, 'kind и mode обязательны');
+  if (!kind || !VALID_KINDS.has(kind) || !mode || !idempotencyKey) {
+    return Response.json({ ok: false, error: "некорректные поля команды" }, { status: 400 });
   }
 
-  // Валидация подтверждения дляライブ команд
-  const liveKinds = ['BROADCAST', 'DMSEND', 'CONDUCT'];
-  if (mode === 'LIVE' && liveKinds.includes(kind) && !confirmation_nonce) {
-    return fail(400, 'LIVE режим требует confirmation_nonce');
+  if (requiresConfirmation(kind, mode) && !confirmationNonce) {
+    return Response.json({ ok: false, error: "LIVE режим требует confirmation_nonce" }, { status: 400 });
   }
 
-  const sb = await getSupabaseClient();
-
-  // Идемпотентная вставка
-  const { data: existing } = await sb
-    .from('control_commands')
-    .select('id,status')
-    .eq('owner_telegram_id', session.telegram_user_id)
-    .eq('idempotency_key', idempotency_key)
-    .maybeSingle();
-
-  if (existing) {
-    return new Response(
-      JSON.stringify({ ok: true, command_id: existing.id, status: existing.status, idempotent: true }),
-      { headers: { 'content-type': 'application/json' } }
-    );
+  try {
+    const result = await enqueueCommand({ ownerId, kind, mode, account, payload, idempotencyKey });
+    return Response.json({ ok: true, command_id: result.id, status: result.status, idempotent: result.idempotent });
+  } catch (error) {
+    return Response.json({ ok: false, error: error.message || "не удалось поставить команду" }, { status: 500 });
   }
-
-  const { data, error } = await sb
-    .from('control_commands')
-    .insert([
-      {
-        idempotency_key,
-        owner_telegram_id: session.telegram_user_id,
-        kind,
-        mode,
-        account: account || 'main',
-        payload: payload || {},
-        request_digest: '', // заполнится триггером или на стороне воркера
-        status: 'PENDING',
-        version: 0,
-      },
-    ])
-    .select('id')
-    .single();
-
-  if (error) {
-    return fail(500, error.message);
-  }
-
-  return new Response(
-    JSON.stringify({ ok: true, command_id: data.id, status: 'PENDING' }),
-    { headers: { 'content-type': 'application/json' } }
-  );
 }

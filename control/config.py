@@ -33,8 +33,8 @@ class ControlSettings:
     bot_token: str
     mini_app_url: str
     owner_telegram_ids: frozenset[int]
-    supabase_url: str
-    supabase_service_role_key: str
+    supabase_url: str = ""
+    supabase_service_role_key: str = ""
     worker_id: str = "worker-1"
     poll_interval_seconds: float = 2.0
     lease_seconds: int = 300
@@ -71,8 +71,8 @@ class ControlSettings:
             bot_token=_required("BOT_TOKEN"),
             mini_app_url=mini_app_url,
             owner_telegram_ids=_owner_ids(_required("OWNER_TELEGRAM_IDS")),
-            supabase_url=_required("SUPABASE_URL"),
-            supabase_service_role_key=_required("SUPABASE_SECRET_KEY"),
+            supabase_url=os.environ.get("SUPABASE_URL", "").strip(),
+            supabase_service_role_key=os.environ.get("SUPABASE_SECRET_KEY", "").strip(),
             worker_id=os.environ.get("WORKER_ID", "worker-1"),
             poll_interval_seconds=float(os.environ.get("POLL_INTERVAL_SECONDS", "2.0")),
             lease_seconds=int(os.environ.get("LEASE_SECONDS", "300")),
