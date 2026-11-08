@@ -122,7 +122,7 @@ ignore_missing_imports = true
 exclude = ["tests/", "docs/", "scripts/", "build/", "dist/"]
 
 [tool.pytest.ini_options]
-minversion = "8.3"
+minversion = "7.0"
 pythonpath = ["."]
 addopts = "-ra -q --strict-markers --cov=control --cov-report=term-missing"
 testpaths = ["tests", "test_suite.py"]
