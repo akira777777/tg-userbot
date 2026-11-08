@@ -386,6 +386,51 @@
       "lastAccessed": "2026-11-08T05:51:25.134Z",
       "accessCount": 0,
       "expiresAt": "2026-12-08T05:51:25.134Z"
+    },
+    "cmd-1794117140963": {
+      "key": "cmd-1794117140963",
+      "value": "{\"command\":\".\\\\.venv\\\\Scripts\\\\python.exe -m control.main healthcheck\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:52:20.963Z",
+      "lastAccessed": "2026-11-08T05:52:20.963Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:52:20.963Z"
+    },
+    "cmd-1794117162265": {
+      "key": "cmd-1794117162265",
+      "value": "{\"command\":\"$envNames = 'BOT_TOKEN','MINI_APP_URL','OWNER_TELEGRAM_IDS','CONTROL_SESSION_SECRET','SUPABASE_URL','SUPABASE_SECRET_KEY'; $pairs = Get-Content .env -ErrorAction SilentlyContinue | Where-Object { $_ -match '^[A-Za-z_][A-Za-z0-9_]*=' } | ForEach-Object { ($_ -split '=',2)[0] }; foreach ($name in $envNames) { $state = if ($pairs -contains $name) { 'present-in-dotenv' } elseif (Test-Path (\\\"Env:\\\" + $name)) { 'present-in-process' } else { 'missing' }; Write-Output \\\"$name=$state\\\" }; Write-Output '---Vercel project---'; Get-Content -Raw dashboard\\\\.vercel\\\\project.json; Get-Command vercel -ErrorAction SilentlyContinue | Select-Object Name,Source | Format-Table -AutoSize; Push-Location dashboard; vercel whoami; Pop-Location\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:52:42.265Z",
+      "lastAccessed": "2026-11-08T05:52:42.265Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:52:42.265Z"
+    },
+    "cmd-1794117222595": {
+      "key": "cmd-1794117222595",
+      "value": "{\"command\":\"$db = 'C:\\\\Users\\\\novra\\\\tg-userbot\\\\userbot.db'; .\\\\.venv\\\\Scripts\\\\python.exe -c \\\"import sqlite3, sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\\\\\\\"select user_id from accounts where name='main' and enabled=1\\\\\\\").fetchone(); print('owner_id_found=' + str(bool(r and r[0]))); print(r[0] if r and r[0] else ''); c.close()\\\" $db\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:53:42.595Z",
+      "lastAccessed": "2026-11-08T05:53:42.595Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:53:42.595Z"
+    },
+    "cmd-1794117231194": {
+      "key": "cmd-1794117231194",
+      "value": "{\"command\":\"& .\\\\.venv\\\\Scripts\\\\python.exe -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); r=c.execute(\\\"select user_id from accounts where name=? and enabled=1\\\", (\\\"main\\\",)).fetchone(); print(\\\"owner_id_found=\\\" + str(bool(r and r[0]))); print(r[0] if r and r[0] else \\\"\\\"); c.close()' 'C:\\\\Users\\\\novra\\\\tg-userbot\\\\userbot.db'\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:53:51.194Z",
+      "lastAccessed": "2026-11-08T05:53:51.194Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:53:51.194Z"
+    },
+    "cmd-1794117254514": {
+      "key": "cmd-1794117254514",
+      "value": "{\"command\":\"Push-Location dashboard; vercel env add --help; Pop-Location\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:54:14.514Z",
+      "lastAccessed": "2026-11-08T05:54:14.514Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:54:14.514Z"
     }
   },
   "version": "3.0.0"
