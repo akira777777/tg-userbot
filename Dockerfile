@@ -1,99 +1,107 @@
-# tg-userbot — Dockerfile
-# Многоступенчатый образ: slim (развертывание) + dev (разработка)
-# Базовый образ: Python 3.12 slim (минимум, ~500 МБ)
-# Стек: FastAPI, uvicorn, python-telegram-bot, Supabase, Redis
-# Размер образа: ~600 МБ
+# ==============================================================================
+# Telegram Userbot — Production Multi-Stage Dockerfile
+# Base OS: Debian 12 (Bookworm) Slim
+# Python: 3.12
+# Architecture: Multi-stage (builder -> runner)
+# Security: Non-root user (appuser, UID 1000), isolated virtualenv, no compilers
+# ==============================================================================
 
-# ==================== ОСНОВНОЙ ОБРАЗ (slim) ====================
-FROM python:3.12-slim-bookworm AS base
+# ------------------------------------------------------------------------------
+# Stage 1: Build & Dependency Compilation
+# ------------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm AS builder
 
-# Ставям локали и переменные окружения
-ENV PYTHONUNBUFFERED=1 \
+# Prevent debconf interactive prompts and disable Python bytecode/buffering
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=3 \
-    PIP_DEFAULT_TIMEOUT=10 \
-    POETRY_VERSION=1.8.3 \
-    POETRY_HOME="/opt/poetry" \
-    POETRY_CACHE_DIR="/root/.cache/poetry" \
-    PATH="$POETRY_HOME/bin:$PATH"
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=100
 
-# Ставим рабочую директорию
-WORKDIR /app
-
-# Ставим базовые зависимости (не изменяются)
+# Install build-time toolchain and C-header dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    gcc \
     libffi-dev \
-    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create virtual environment for clean isolation
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Upgrade core packaging tools
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+# Install production Python dependencies
+WORKDIR /build
+COPY requirements.txt pyproject.toml ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# ------------------------------------------------------------------------------
+# Stage 2: Minimal Hardened Runtime
+# ------------------------------------------------------------------------------
+FROM python:3.12-slim-bookworm AS runner
+
+# Production runtime environment variables
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app \
+    PATH="/opt/venv/bin:$PATH" \
+    USERBOT_DB=/app/data/userbot.db \
+    USERBOT_SESSIONS=/app/sessions \
+    USERBOT_MEDIA=/app/media_cache \
+    WEBBOT_PORT=8642 \
+    WEBBOT_HOST=0.0.0.0
+
+# Install runtime OS utilities:
+# - ca-certificates: TLS verification for Telegram MTProto, Bot API, and Supabase
+# - tzdata: Accurate timezone calculations
+# - curl: Container healthchecks
+# - tini: Signal forwarding and zombie process reaping (PID 1)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
     curl \
-    git \
+    tini \
     && rm -rf /var/lib/apt/lists/*
 
-# Ставим poetry (менеджер зависимостей)
-RUN curl -sSL https://install.python-poetry.org | python3 - --version $POETRY_VERSION
+# Create dedicated non-root user (UID 1000 / GID 1000)
+RUN groupadd -g 1000 appuser && \
+    useradd -u 1000 -g appuser -s /bin/sh -d /home/appuser -m appuser
 
-# Копируем файлы проекта
-COPY pyproject.toml poetry.lock* ./
-COPY .env.example .env
-
-# Ставим зависимости (базовые + dev)
-RUN poetry install --no-interaction --no-root --no-compile --without-hatchling
-
-# Копируем исходный код
-COPY --chown=poetry:root ./src ./src
-COPY --chown=poetry:root ./scripts ./scripts
-COPY --chown=poetry:root ./dashboard ./dashboard
-
-# Ставим приложение
-RUN poetry build
-
-# Экспортируем порт и входим в контейнер
-EXPOSE 8000
-CMD ["poetry", "run", "poetry", "run", "uvicorn", "src.tg_userbot.main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-## ==================== ОБРАЗ ДЛЯ РАЗРАБОТКИ (dev) ====================
-FROM base AS dev
-
-# Ставим VS Code Remote
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssh-client \
-    && rm -rf /var/lib/apt/lists/*
-
-# Ставим pre-commit
-RUN pip install pre-commit
-
-# Ставим dev-зависимости
-RUN poetry install --no-interaction --no-root --no-compile
-
-# Ставим редактор и отладчики
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    code \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Ставим VS Code Remote SSH (для разработки на macOS)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssh-client \
-    && rm -rf /var/lib/apt/lists/*
-
+# Set working directory
 WORKDIR /app
 
-CMD ["bash", "-c", "poetry run python src/tg_userbot/main.py"]
+# Pre-create required runtime directories with ownership
+RUN mkdir -p /app/data /app/sessions /app/media_cache /app/logs && \
+    chown -R appuser:appuser /app
 
-## ==================== ОБРАЗ ДЛЯ ПРОДАКШЕНА (prod) ====================
-FROM base AS prod
+# Copy isolated virtual environment from builder stage
+COPY --from=builder /opt/venv /opt/venv
 
-# Ставим gunicorn
-RUN pip install gunicorn uvicorn
+# Create entrypoint wrapper script with POSIX line endings
+RUN printf '#!/bin/sh\nset -e\nmkdir -p /app/data /app/sessions /app/media_cache /app/logs 2>/dev/null || true\ncase "$1" in\n  worker)\n    exec python -m control.main worker\n    ;;\n  controller|telegram-bot)\n    exec python -m control.main telegram-bot\n    ;;\n  web)\n    exec python web.py\n    ;;\n  healthcheck)\n    exec python -m control.main healthcheck\n    ;;\n  bot)\n    shift\n    exec python bot.py "$@"\n    ;;\n  *)\n    exec "$@"\n    ;;\nesac\n' > /usr/local/bin/docker-entrypoint.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Копируем исходный код
-COPY --chown=poetry:root ./src ./src
-COPY --chown=poetry:root ./scripts ./scripts
+# Copy application source code and assets with explicit file boundaries
+COPY --chown=appuser:appuser bot.py web.py cloud.py pyproject.toml requirements.txt ./
+COPY --chown=appuser:appuser control/ ./control/
+COPY --chown=appuser:appuser scripts/ ./scripts/
+COPY --chown=appuser:appuser static/ ./static/
 
-# Ставим приложение
-RUN poetry build
+# Declare mount targets for persistent volumes
+VOLUME ["/app/data", "/app/sessions", "/app/media_cache", "/app/logs"]
 
-# Ставим порт и входим в контейнер
-EXPOSE 8000
-CMD ["poetry", "run", "gunicorn", "--workers", "4", "--bind", "0.0.0.0:8000", "src.tg_userbot.main:app"]
+# Drop privileges to non-root user
+USER appuser
+
+# Expose web dashboard port
+EXPOSE 8642
+
+# Define init process and default entrypoint
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
+
+# Default command: background queue worker
+CMD ["worker"]
