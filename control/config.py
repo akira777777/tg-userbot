@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from dotenv import load_dotenv
+
 
 class ConfigurationError(ValueError):
     """Raised when a required control-plane setting is absent or unsafe."""
@@ -63,6 +65,7 @@ class ControlSettings:
 
     @classmethod
     def from_environment(cls) -> ControlSettings:
+        load_dotenv()
         mini_app_url = _required("MINI_APP_URL")
         parsed = urlparse(mini_app_url)
         if parsed.scheme != "https" or not parsed.netloc:

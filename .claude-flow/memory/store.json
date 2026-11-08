@@ -476,6 +476,15 @@
       "lastAccessed": "2026-11-08T05:56:21.109Z",
       "accessCount": 0,
       "expiresAt": "2026-12-08T05:56:21.109Z"
+    },
+    "cmd-1794117472671": {
+      "key": "cmd-1794117472671",
+      "value": "{\"command\":\"cmd /c \\\"set MINI_APP_URL=https://tg-userbot-dashboard-gamma.vercel.app\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:57:52.671Z",
+      "lastAccessed": "2026-11-08T05:57:52.671Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:57:52.671Z"
     }
   },
   "version": "3.0.0"
