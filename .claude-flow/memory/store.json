@@ -1,0 +1,68 @@
+{
+  "entries": {
+    "cmd-1794114922658": {
+      "key": "cmd-1794114922658",
+      "value": "{\"command\":\"Get-Content -Raw 'C:\\\\Users\\\\novra\\\\.agents\\\\skills\\\\architecture\\\\SKILL.md'; Write-Output \\\"`n---MEMORY HITS---\\\"; rg -n -i --glob 'MEMORY.md' 'tg-userbot|telegram.*mini|mini.*app|webapp' 'C:\\\\Users\\\\novra\\\\.codex\\\\memories'\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:15:22.658Z",
+      "lastAccessed": "2026-11-08T05:15:22.658Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:15:22.658Z"
+    },
+    "cmd-1794114950586": {
+      "key": "cmd-1794114950586",
+      "value": "{\"command\":\"Get-Location; git status --short; Get-ChildItem -Force | Select-Object Mode,Length,LastWriteTime,Name | Format-Table -AutoSize; Write-Output '---FILES---'; rg --files -g '!node_modules' -g '!venv' -g '!vendor' -g '!dist' -g '!build' | Select-Object -First 400; Write-Output '---MANIFESTS---'; Get-ChildItem -Force -File -Include package.json,pyproject.toml,requirements*.txt,poetry.lock,uv.lock,Pipfile,go.mod,Cargo.toml,compose.y*ml,Dockerfile,README*,AGENTS.md | ForEach-Object { Write-Output \\\"### $($_.FullName)\\\"; Get-Content -Raw $_.FullName }; Write-Output '---TODO---'; rg -n -i --glob '!node_modules/**' --glob '!venv/**' --glob '!vendor/**' --glob '!dist/**' --glob '!build/**' 'TODO|FIXME|HACK|XXX|not implemented|passs*(#.*)?$' .\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:15:50.586Z",
+      "lastAccessed": "2026-11-08T05:15:50.586Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:15:50.586Z"
+    },
+    "cmd-1794114960878": {
+      "key": "cmd-1794114960878",
+      "value": "{\"command\":\"$paths = @('pyproject.toml','requirements.txt','README.md','docs\\\\architecture\\\\ARCHITECTURE.md','dashboard\\\\package.json','dashboard\\\\app\\\\page.js','dashboard\\\\app\\\\api\\\\data\\\\route.js','static\\\\index.html','web.py','bot.py','cloud.py','Makefile','docker-compose.yml','Dockerfile','.env.example','pyrightconfig.json'); foreach ($p in $paths) { if (Test-Path $p) { Write-Output \\\"`n### $p\\\"; Get-Content -Raw -LiteralPath $p } }\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:16:00.878Z",
+      "lastAccessed": "2026-11-08T05:16:00.878Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:16:00.878Z"
+    },
+    "cmd-1794114973081": {
+      "key": "cmd-1794114973081",
+      "value": "{\"command\":\"Write-Output '---GIT---'; git log --oneline -12; git status --short; Write-Output '---DASHBOARD MANIFEST---'; Get-Content -Raw dashboard\\\\package.json; Write-Output '---DASHBOARD FILES---'; Get-ChildItem dashboard -Recurse -File | Where-Object { $_.FullName -notmatch 'node_modules' } | Select-Object FullName,Length; Write-Output '---CI/CONFIG---'; Get-ChildItem .github,.vscode -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { Write-Output \\\"### $($_.FullName)\\\"; Get-Content -Raw $_.FullName }; Write-Output '---GITIGNORE---'; Get-Content -Raw .gitignore; Write-Output '---TEST NAMES---'; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest --collect-only -q\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:16:13.081Z",
+      "lastAccessed": "2026-11-08T05:16:13.081Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:16:13.081Z"
+    },
+    "cmd-1794114983628": {
+      "key": "cmd-1794114983628",
+      "value": "{\"command\":\"Write-Output '---DASHBOARD PAGE---'; Get-Content -Raw dashboard\\\\app\\\\page.js; Write-Output '---DASHBOARD API---'; Get-Content -Raw dashboard\\\\app\\\\api\\\\data\\\\route.js; Write-Output '---DASHBOARD LAYOUT---'; Get-Content -Raw dashboard\\\\app\\\\layout.js; Write-Output '---DASHBOARD CSS---'; Get-Content -Raw dashboard\\\\app\\\\globals.css; Write-Output '---STATIC HEADERS---'; Get-Content static\\\\index.html -TotalCount 240; Write-Output '---WEB SYMBOLS---'; rg -n '^(@app\\\\.|async def |def |class )|/api/|StaticFiles|HTMLResponse|FileResponse|EventSource|SSE|WebApp|initData|Telegram' web.py; Write-Output '---BOT COMMANDS---'; rg -n '^async def |^def |add_argument|set_defaults|subparsers|web|Mini|WebApp|initData' bot.py\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:16:23.628Z",
+      "lastAccessed": "2026-11-08T05:16:23.628Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:16:23.628Z"
+    },
+    "cmd-1794114992449": {
+      "key": "cmd-1794114992449",
+      "value": "{\"command\":\"Write-Output '---WEB 1-420---'; Get-Content web.py | Select-Object -First 420; Write-Output '---WEB 421-END---'; Get-Content web.py | Select-Object -Skip 420; Write-Output '---STATIC SCRIPT SECTION---'; $start=(Select-String -Path static\\\\index.html -Pattern '<script>').LineNumber; Get-Content static\\\\index.html | Select-Object -Skip ($start-1); Write-Output '---TEST SOURCES---'; Get-Content -Raw test_suite.py; Get-Content -Raw test_orchestra.py; Get-Content -Raw test_media.py; Get-Content -Raw test_api_live.py\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:16:32.449Z",
+      "lastAccessed": "2026-11-08T05:16:32.449Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:16:32.449Z"
+    },
+    "cmd-1794115000930": {
+      "key": "cmd-1794115000930",
+      "value": "{\"command\":\"Write-Output '---WEB ENDPOINTS---'; Get-Content web.py | Select-Object -Skip 440; Write-Output '---STATIC SCRIPT START---'; $s=(Select-String -Path static\\\\index.html -Pattern '<script>').LineNumber; Get-Content static\\\\index.html | Select-Object -Skip ($s-1) -First 360; Write-Output '---BOT SCHEMA & CRITICAL FUNCTIONS---'; Get-Content bot.py | Select-Object -First 190; Get-Content bot.py | Select-Object -Skip 380 -First 180; Get-Content bot.py | Select-Object -Skip 1120 -First 230; Write-Output '---SUPABASE SCHEMA---'; Get-Content -Raw supabase\\\\schema.sql\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:16:40.930Z",
+      "lastAccessed": "2026-11-08T05:16:40.930Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:16:40.930Z"
+    }
+  },
+  "version": "3.0.0"
+}
