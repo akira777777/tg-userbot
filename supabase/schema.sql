@@ -96,7 +96,7 @@ create table if not exists control_confirmations (
 );
 
 -- RPC: атоматьное взятие команд в аренду воркером
-do $$
+do $migration$
 begin
   create or replace function claim_control_commands(
     p_worker_id text,
@@ -117,7 +117,7 @@ begin
     lease_expires_at timestamptz,
     version integer
   )
-  language plpgsql as $$
+  language plpgsql as $function$
   declare
     v_now timestamptz := now();
     v_lease timestamptz := v_now + (p_lease_seconds || ' seconds')::interval;
@@ -134,7 +134,6 @@ begin
       select id from control_commands
       where (status = 'PENDING'
              or (status in ('CLAIMED','RUNNING') and lease_expires_at < v_now))
-        and owner_telegram_id = owner_telegram_id  -- ограничение по владельцу
       order by created_at asc
       limit p_batch_size
       for update skip locked
@@ -142,8 +141,8 @@ begin
     returning id, idempotency_key, owner_telegram_id, kind, mode, account,
               payload, status, created_at, claimed_at, lease_expires_at, version;
   end;
-  $$;
-end $$;
+  $function$;
+end $migration$;
 
 -- RLS: только service_role может читать/писать контрольные таблицы
 alter table control_commands enable row level security;

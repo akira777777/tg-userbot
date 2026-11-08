@@ -1,4 +1,5 @@
 import "server-only";
+import crypto from "node:crypto";
 
 /**
  * Серверный клиент очереди команд Supabase (control_commands / control_command_events).
@@ -51,7 +52,46 @@ export function buildCanonicalSummary(kind, payload) {
   return parts.join(" | ");
 }
 
-export async function enqueueCommand({ ownerId, kind, mode, account, payload, idempotencyKey }) {
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function digestCommand(kind, mode, account, payload) {
+  return crypto.createHash("sha256").update(canonicalJson({ kind, mode, account: account || "main", payload: payload || {} })).digest("hex");
+}
+
+function controlFilter(value) {
+  return encodeURIComponent(value);
+}
+
+export async function createConfirmation({ ownerId, kind, mode, account, payload }) {
+  const nonce = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const requestDigest = digestCommand(kind, mode, account, payload);
+  const response = await fetch(supabaseUrl("control_confirmations"), {
+    method: "POST",
+    headers: supabaseHeaders(),
+    body: JSON.stringify([{ nonce, owner_telegram_id: ownerId, request_digest: requestDigest, expires_at: expiresAt }]),
+  });
+  if (!response.ok) throw new Error("Could not store confirmation");
+  return { nonce, request_digest: requestDigest, expires_at: expiresAt, canonical_summary: buildCanonicalSummary(kind, payload) };
+}
+
+async function consumeConfirmation({ ownerId, nonce, requestDigest }) {
+  const response = await fetch(
+    supabaseUrl(`control_confirmations?nonce=eq.${controlFilter(nonce)}&owner_telegram_id=eq.${ownerId}&request_digest=eq.${controlFilter(requestDigest)}&consumed_at=is.null&expires_at=gt.${controlFilter(new Date().toISOString())}`),
+    { method: "PATCH", headers: supabaseHeaders(), body: JSON.stringify({ consumed_at: new Date().toISOString() }) }
+  );
+  if (!response.ok) throw new Error("Could not verify confirmation");
+  const rows = await response.json();
+  if (!rows.length) throw new Error("Confirmation is invalid or expired");
+}
+
+export async function enqueueCommand({ ownerId, kind, mode, account, payload, idempotencyKey, confirmationNonce }) {
   const validationError = validateCommandPayload(kind, payload);
   if (validationError) throw new Error(validationError);
 
@@ -67,6 +107,11 @@ export async function enqueueCommand({ ownerId, kind, mode, account, payload, id
     if (rows.length) return { id: rows[0].id, status: rows[0].status, idempotent: true };
   }
 
+  const requestDigest = digestCommand(kind, mode, account, payload);
+  if (requiresConfirmation(kind, mode)) {
+    await consumeConfirmation({ ownerId, nonce: confirmationNonce, requestDigest });
+  }
+
   const insertRes = await fetch(supabaseUrl("control_commands"), {
     method: "POST",
     headers: supabaseHeaders(),
@@ -78,7 +123,7 @@ export async function enqueueCommand({ ownerId, kind, mode, account, payload, id
         mode,
         account: account || "main",
         payload: payload || {},
-        request_digest: Buffer.from(JSON.stringify(payload || {})).toString("base64").slice(0, 128),
+        request_digest: requestDigest,
         status: "PENDING",
         version: 0,
       },

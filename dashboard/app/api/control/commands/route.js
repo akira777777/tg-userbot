@@ -3,7 +3,6 @@ import { enqueueCommand, listCommands, requiresConfirmation } from "../../../../
 
 export const dynamic = "force-dynamic";
 
-const LIVE_KINDS = new Set(["BROADCAST", "DMSEND", "CONDUCT"]);
 const VALID_KINDS = new Set([
   "STATUS", "GROUPS", "CAMPAIGNS", "MEDIA_LIST", "BLACKLIST_ADD",
   "BROADCAST", "DMSEND", "CONDUCT", "STOP",
@@ -43,7 +42,7 @@ export async function POST(request) {
 
   const { kind, mode, account, payload, idempotency_key: idempotencyKey, confirmation_nonce: confirmationNonce } = body || {};
 
-  if (!kind || !VALID_KINDS.has(kind) || !mode || !idempotencyKey) {
+  if (!kind || !VALID_KINDS.has(kind) || !["READ", "DRY_RUN", "LIVE"].includes(mode) || !idempotencyKey) {
     return Response.json({ ok: false, error: "некорректные поля команды" }, { status: 400 });
   }
 
@@ -52,7 +51,7 @@ export async function POST(request) {
   }
 
   try {
-    const result = await enqueueCommand({ ownerId, kind, mode, account, payload, idempotencyKey });
+    const result = await enqueueCommand({ ownerId, kind, mode, account, payload, idempotencyKey, confirmationNonce });
     return Response.json({ ok: true, command_id: result.id, status: result.status, idempotent: result.idempotent });
   } catch (error) {
     return Response.json({ ok: false, error: error.message || "не удалось поставить команду" }, { status: 500 });

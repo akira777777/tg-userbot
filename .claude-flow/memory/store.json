@@ -215,6 +215,168 @@
       "lastAccessed": "2026-11-08T05:45:22.332Z",
       "accessCount": 0,
       "expiresAt": "2026-12-08T05:45:22.332Z"
+    },
+    "cmd-1794116730755": {
+      "key": "cmd-1794116730755",
+      "value": "{\"command\":\"Get-Content -Raw vitest.config.ts; Get-Content -Raw dashboard\\\\vitest.config.ts; Get-ChildItem dashboard -Force | Select-Object Name,Mode,Length | Format-Table -AutoSize; Get-Content -Raw dashboard\\\\package.json\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:45:30.755Z",
+      "lastAccessed": "2026-11-08T05:45:30.755Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:45:30.755Z"
+    },
+    "cmd-1794116759808": {
+      "key": "cmd-1794116759808",
+      "value": "{\"command\":\"npm test\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:45:59.808Z",
+      "lastAccessed": "2026-11-08T05:45:59.808Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:45:59.808Z"
+    },
+    "cmd-1794116769253": {
+      "key": "cmd-1794116769253",
+      "value": "{\"command\":\"npm install server-only@latest; npm test\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:46:09.253Z",
+      "lastAccessed": "2026-11-08T05:46:09.253Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:46:09.253Z"
+    },
+    "cmd-1794116788053": {
+      "key": "cmd-1794116788053",
+      "value": "{\"command\":\"npm test; npm run build; npm audit --omit=dev --audit-level=high\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:46:28.053Z",
+      "lastAccessed": "2026-11-08T05:46:28.053Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:46:28.053Z"
+    },
+    "cmd-1794116807334": {
+      "key": "cmd-1794116807334",
+      "value": "{\"command\":\"Get-Content supabase\\\\schema.sql | Select-Object -Skip 48 -First 130\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:46:47.334Z",
+      "lastAccessed": "2026-11-08T05:46:47.334Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:46:47.334Z"
+    },
+    "cmd-1794116877644": {
+      "key": "cmd-1794116877644",
+      "value": "{\"command\":\"npm uninstall uuid; npm test; npm run build; npm audit --omit=dev --audit-level=high; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:47:57.644Z",
+      "lastAccessed": "2026-11-08T05:47:57.644Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:47:57.644Z"
+    },
+    "cmd-1794116893320": {
+      "key": "cmd-1794116893320",
+      "value": "{\"command\":\"npm uninstall uuid; npm test; npm run build; npm audit --omit=dev --audit-level=high\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:48:13.320Z",
+      "lastAccessed": "2026-11-08T05:48:13.320Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:48:13.320Z"
+    },
+    "cmd-1794116932134": {
+      "key": "cmd-1794116932134",
+      "value": "{\"command\":\"npm test; npm run build; npm audit --omit=dev --audit-level=high; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest; .\\\\.venv\\\\Scripts\\\\python.exe -m py_compile bot.py web.py cloud.py control\\\\*.py; git diff --check; git status --short\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:48:52.134Z",
+      "lastAccessed": "2026-11-08T05:48:52.134Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:48:52.134Z"
+    },
+    "cmd-1794116950534": {
+      "key": "cmd-1794116950534",
+      "value": "{\"command\":\"npm test; npm run build; npm audit --omit=dev --audit-level=high; $files = @('bot.py','web.py','cloud.py') + (Get-ChildItem control -Filter *.py -File | ForEach-Object { $_.FullName }); .\\\\.venv\\\\Scripts\\\\python.exe -m py_compile $files; git diff --check\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:49:10.534Z",
+      "lastAccessed": "2026-11-08T05:49:10.534Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:49:10.534Z"
+    },
+    "cmd-1794116959052": {
+      "key": "cmd-1794116959052",
+      "value": "{\"command\":\"$files = @('bot.py','web.py','cloud.py') + (Get-ChildItem control -Filter *.py -File | ForEach-Object { $_.FullName }); .\\\\.venv\\\\Scripts\\\\python.exe -m py_compile $files; .\\\\.venv\\\\Scripts\\\\python.exe -m pytest; git diff --check\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:49:19.052Z",
+      "lastAccessed": "2026-11-08T05:49:19.052Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:49:19.052Z"
+    },
+    "cmd-1794116970331": {
+      "key": "cmd-1794116970331",
+      "value": "{\"command\":\".\\\\.venv\\\\Scripts\\\\python.exe -m ruff check control tests; git status --short; git diff --stat\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:49:30.331Z",
+      "lastAccessed": "2026-11-08T05:49:30.331Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:49:30.331Z"
+    },
+    "cmd-1794117018254": {
+      "key": "cmd-1794117018254",
+      "value": "{\"command\":\"Get-Content supabase\\\\schema.sql | Select-Object -Skip 92 -First 58; docker compose config --quiet\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:50:18.254Z",
+      "lastAccessed": "2026-11-08T05:50:18.254Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:50:18.254Z"
+    },
+    "cmd-1794117030706": {
+      "key": "cmd-1794117030706",
+      "value": "{\"command\":\"Select-String -Path docker-compose.yml -Pattern 'telegram-webhook' -Context 0,35\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:50:30.706Z",
+      "lastAccessed": "2026-11-08T05:50:30.706Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:50:30.706Z"
+    },
+    "cmd-1794117039322": {
+      "key": "cmd-1794117039322",
+      "value": "{\"command\":\"docker compose config --quiet; docker compose -f docker-compose.prod.yml config --quiet; git diff --check; git status --short\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:50:39.322Z",
+      "lastAccessed": "2026-11-08T05:50:39.322Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:50:39.322Z"
+    },
+    "cmd-1794117045405": {
+      "key": "cmd-1794117045405",
+      "value": "{\"command\":\"Select-String -Path docker-compose.prod.yml -Pattern '^\\\\s*- 8080$' -Context 3,2\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:50:45.405Z",
+      "lastAccessed": "2026-11-08T05:50:45.405Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:50:45.405Z"
+    },
+    "cmd-1794117054024": {
+      "key": "cmd-1794117054024",
+      "value": "{\"command\":\"docker compose config --quiet; docker compose -f docker-compose.prod.yml config --quiet; git diff --check\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:50:54.024Z",
+      "lastAccessed": "2026-11-08T05:50:54.024Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:50:54.024Z"
+    },
+    "cmd-1794117062086": {
+      "key": "cmd-1794117062086",
+      "value": "{\"command\":\"rg -n -C 3 'container_name:|replicas:' docker-compose.prod.yml\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:51:02.086Z",
+      "lastAccessed": "2026-11-08T05:51:02.086Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:51:02.086Z"
+    },
+    "cmd-1794117071701": {
+      "key": "cmd-1794117071701",
+      "value": "{\"command\":\"docker compose config --quiet; docker compose -f docker-compose.prod.yml config --quiet; git diff --check\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:51:11.701Z",
+      "lastAccessed": "2026-11-08T05:51:11.701Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:51:11.701Z"
     }
   },
   "version": "3.0.0"

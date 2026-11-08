@@ -6,7 +6,6 @@ services:
   # ───── ПРИЛОЖЕНИЕ (автоскейлинг) ─────
   app:
     image: ghcr.io/novra/tg-userbot:latest
-    container_name: tg-userbot-app-0
     deploy:
       replicas: 4
       restart_policy:
@@ -116,7 +115,6 @@ services:
   # ───── TELEGRAM WEBHOOK (для Webhook-режима) ─────
   telegram-webhook:
     image: python:3.12-slim-bookworm
-    container_name: tg-userbot-webhook
     deploy:
       replicas: 2
       restart_policy:
@@ -142,7 +140,7 @@ services:
       - --host
       - 0.0.0.0
       - --port
-      - 8080
+      - "8080"
     environment:
       - TG_BOT_TOKEN=${TG_BOT_TOKEN}
       - WEBHOOK_URL=https://your-domain.com/webhook

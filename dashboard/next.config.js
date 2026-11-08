@@ -1,1 +1,4 @@
-module.exports = { reactStrictMode: true };
+module.exports = {
+  reactStrictMode: true,
+  turbopack: { root: __dirname },
+};

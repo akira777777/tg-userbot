@@ -4,18 +4,11 @@
  * Обрабатывает 401 -> сброс сессии.
  */
 
-let sessionCookie = null;
-
-export function setSessionCookie(value) {
-  sessionCookie = value;
-}
-
 export async function apiRequest(path, { method = 'GET', body, initData } = {}) {
   const headers = {
     'content-type': 'application/json',
   };
   if (initData) headers['x-telegram-init-data'] = initData;
-  if (sessionCookie) headers.cookie = `control_session=${sessionCookie}`;
 
   const res = await fetch(path, {
     method,
@@ -64,7 +57,7 @@ export async function getCommands(initData, { limit = 50, offset = 0 } = {}) {
 }
 
 export async function cancelCommand(commandId, initData) {
-  return apiRequest(`/api/control/commands/${encodeURIComponent(commandId)}/cancel`, {
+  return apiRequest(`/api/control/commands/${encodeURIComponent(commandId)}`, {
     method: 'POST',
     initData,
   });
