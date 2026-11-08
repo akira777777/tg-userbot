@@ -21,3 +21,9 @@ __pycache__/
 
 # маркер последнего облачного push
 .cloud_last
+
+# Vercel
+.vercel/
+dashboard/.env*
+dashboard/.next/
+dashboard/node_modules/
