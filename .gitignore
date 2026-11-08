@@ -27,3 +27,14 @@ __pycache__/
 dashboard/.env*
 dashboard/.next/
 dashboard/node_modules/
+dashboard/coverage/
+
+# Инструменты и артефакты
+.serena/
+.claude-flow/
+.control_state/
+
+# Тестовые артефакты
+.pytest_cache/
+.coverage
+htmlcov/
