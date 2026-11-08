@@ -78,4 +78,37 @@ python bot.py blacklist add 123456   # руками занести в ЧС; blac
 ## Хранение
 
 `userbot.db` (SQLite): `groups`, `members`, `member_sources`, `campaigns`,
-`sent` (журнал статусов каждой попытки), `blacklist`. Экспорт — `exports/*.csv`.
+`sent` (журнал статусов каждой попытки), `blacklist`, `tb_*` (облачное зеркало),
+`media` (библиотека через «Избранное»). Экспорт — `exports/*.csv`.
+
+## Облачное зеркало (Supabase) + дашборд
+
+Собранные данные синхронизируются в Supabase (таблицы `tb_*`), что даёт:
+- наблюдение со любого устройства (дашборд на Vercel);
+- бэкап агрегатов;
+- Realtime-подписки на изменения.
+
+### Dашборд
+
+- URL: `https://tg-userbot-dashboard-b1ujm4kbi-akira77777777.vercel.app`
+- Вход: введите `DASH_TOKEN` (из `.env`, не в репозитории).
+- Автообновление: каждые 15 с.
+
+### Деплой дашборда
+
+```bash
+cd dashboard
+vercel deploy -y           # preview
+vercel deploy --prod -y    # production
+```
+
+### Схемы
+
+- SQL: `supabase/schema.sql` (применить в Supabase → SQL Editor).
+- Авто-push: `AUTO_CLOUD=1` в `.env` — после broadcast/dmsend/conduct/
+  scrape/probe/privacy/align/accounts/media/blacklist/export зеркало обновляется.
+
+## Хранение
+
+`userbot.db` (SQLite): `groups`, `members`, `member_sources`, `campaigns`,
+`sent`, `blacklist`, `tb_*`, `media`. Экспорт — `exports/*.csv`.
