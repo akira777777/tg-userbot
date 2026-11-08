@@ -2,9 +2,11 @@
 test_suite.py — Logic verification suite for tg-userbot.
 Pytest-compatible test suite with SQLite connection management and clean teardown.
 """
-import os
+
+import contextlib
 import sys
 from pathlib import Path
+
 import pytest
 
 # Ensure repository root is on sys.path
@@ -12,9 +14,10 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import bot
-import web as w
-from telethon.tl.types import PeerChannel, PeerChat
+from telethon.tl.types import PeerChannel, PeerChat  # noqa: E402
+
+import bot  # noqa: E402
+import web as w  # noqa: E402
 
 
 @pytest.fixture
@@ -55,10 +58,8 @@ def managed_db(tmp_path, monkeypatch):
         yield conn
     finally:
         for c in open_conns:
-            try:
+            with contextlib.suppress(Exception):
                 c.close()
-            except Exception:
-                pass
 
 
 @pytest.fixture
@@ -125,6 +126,7 @@ def test_blacklist_resolution_and_dm_filtering(seeded_db):
 
 def test_blacklist_unknown_nick(seeded_db):
     """Unknown nick raises SystemExit with expected message."""
+    _ = seeded_db
 
     class A:
         pass
