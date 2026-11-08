@@ -1,0 +1,332 @@
+# docker-compose.prod.yml — продакшен-стек
+# Используется в production (автоскейлинг, мониторинг, логирование)
+# docker-compose -f docker-compose.prod.yml up -d
+
+services:
+  # ───── ПРИЛОЖЕНИЕ (автоскейлинг) ─────
+  app:
+    image: ghcr.io/novra/tg-userbot:latest
+    deploy:
+      replicas: 4
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    environment:
+      - TZ=Europe/Moscow
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY}
+      - REDIS_URL=redis://redis:6379/0
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=tg_userbot
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=tg_userbot_db
+      - DASHBOARD_URL=${DASHBOARD_URL}
+      - TG_CHANNEL_ID=${TG_CHANNEL_ID}
+      - TG_GROUP_ID=${TG_GROUP_ID}
+      - TG_ADMIN_ID=${TG_ADMIN_ID}
+      - WORKERS=4
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ───── БАЗА ДАННЫХ ─────
+  db:
+    image: postgres:16-alpine
+    container_name: tg-userbot-db
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    environment:
+      POSTGRES_USER: tg_userbot
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: tg_userbot_db
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./supabase/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tg_userbot -d tg_userbot_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ───── REDIS ─────
+  redis:
+    image: redis:7-alpine
+    container_name: tg-userbot-redis
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ───── TELEGRAM WEBHOOK (для Webhook-режима) ─────
+  telegram-webhook:
+    image: python:3.12-slim-bookworm
+    deploy:
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    volumes:
+      - ./src:/app/src:ro
+    working_dir: /app
+    command:
+      - python
+      - -m
+      - uvicorn
+      - src.tg_userbot.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    environment:
+      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
+      - WEBHOOK_URL=https://your-domain.com/webhook
+    ports:
+      - "8080:8080"
+    depends_on:
+      - app
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ───── MONITORING (Prometheus + Grafana) ─────
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: tg-userbot-prometheus
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    volumes:
+      - prometheus_data:/prometheus
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+    ports:
+      - "9090:9090"
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: tg-userbot-grafana
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "3000:3000"
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ───── ELK (логирование) ─────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: tg-userbot-elasticsearch
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    environment:
+      - discovery.type=single-node
+      - node.name=elasticsearch
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.17.0
+    container_name: tg-userbot-logstash
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    volumes:
+      - ./monitoring/logstash/pipeline.yml:/usr/share/logstash/pipeline/logstash.yml:ro
+      - ./monitoring/logstash/config/logstash.conf:/usr/share/logstash/conf.d/logstash.conf:ro
+    depends_on:
+      - elasticsearch
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.0
+    container_name: tg-userbot-kibana
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ───── MEDIA STORAGE ─────
+  media:
+    image: alpine:latest
+    container_name: tg-userbot-media
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    volumes:
+      - media_storage:/media
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ==================== NETWORKS & VOLUMES ====================
+networks:
+  tg-userbot-network:
+    driver: bridge
+
+volumes:
+  db_data:
+    driver: local
+  redis_data:
+    driver: local
+  media_storage:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  elasticsearch_data:
+    driver: local

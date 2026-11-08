@@ -1,0 +1,40 @@
+# секреты и доступы — НИКОГДА не в репозитории
+.env
+*.session
+*.session-*
+*.session.unauth
+sessions/
+media_cache/
+
+# личные данные и артефакты работы
+userbot.db
+userbot.db-wal
+userbot.db-shm
+test*.db
+exports/
+logs/
+
+# окружение
+.venv/
+__pycache__/
+*.pyc
+
+# маркер последнего облачного push
+.cloud_last
+
+# Vercel
+.vercel/
+dashboard/.env*
+dashboard/.next/
+dashboard/node_modules/
+dashboard/coverage/
+
+# Инструменты и артефакты
+.serena/
+.claude-flow/
+.control_state/
+
+# Тестовые артефакты
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>tg-userbot · оркестр</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; --bg:#131619; --card:#1b1f24; --line:#2a3038; --fg:#e6e9ee;
+          --mut:#96a0ad; --acc:#4f9cf9; --ok:#3fb950; --warn:#d29922; --err:#f85149; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:10px; align-items:center;
+           padding:12px 18px; border-bottom:1px solid var(--line);
+           position:sticky; top:0; background:var(--bg); z-index:5;}
+  h1 { font-size:16px; margin:0 12px 0 0; }
+  .chip { background:var(--card); border:1px solid var(--line); border-radius:8px;
+          padding:4px 10px; font-size:12.5px; color:var(--mut); }
+  .chip b { color:var(--fg); }
+  main { display:grid; grid-template-columns: minmax(360px, 5fr) minmax(420px, 6fr);
+         gap:14px; padding:14px 18px; align-items:start; }
+  @media (max-width: 1080px){ main{ grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
+          padding:12px 14px; margin-bottom:14px; }
+  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em;
+             color:var(--mut); margin:0 0 10px; }
+  button { background:#232a33; color:var(--fg); border:1px solid var(--line);
+           border-radius:8px; padding:6px 12px; font-size:13px; cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button.pri { background:#1f4b8f; border-color:#2f6dc4; }
+  button.danger { color:var(--err); }
+  button:disabled { opacity:.45; cursor:default; }
+  textarea, input[type=text], input[type=number], select {
+    width:100%; background:#101317; color:var(--fg); border:1px solid var(--line);
+    border-radius:8px; padding:7px 9px; font:13px/1.4 inherit; margin:4px 0 8px; }
+  textarea { min-height:74px; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .row label { color:var(--mut); font-size:12.5px; display:flex; gap:4px; align-items:center; }
+  .num { width:88px; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th, td { padding:4px 6px; border-bottom:1px solid var(--line); text-align:left; }
+  td.title { max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  th { color:var(--mut); font-weight:600; }
+  .tblwrap { max-height:260px; overflow:auto; }
+  #log { background:#0d0f12; border:1px solid var(--line); border-radius:10px;
+         padding:10px; height:400px; overflow:auto;
+         font:12px/1.5 "Cascadia Mono", Consolas, monospace; white-space:pre-wrap; }
+  .l-ok { color:var(--ok);} .l-fail{ color:var(--err);} .l-warn{ color:var(--warn);}
+  .l-cmd { color:var(--acc);} .l-dim{ color:var(--mut);}
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--ok);
+         display:inline-block; margin-right:6px; }
+  .dot.off { background:#555; }
+  .st-run { color:var(--warn); font-weight:600; }
+  .st-flood { color:var(--err); }
+  .st-off { color:var(--mut); }
+  .badge { border-radius:6px; padding:1px 7px; font-size:11.5px; border:1px solid var(--line); }
+  .mdgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:8px; }
+  .mdtile { background:#101317; border:1px solid var(--line); border-radius:10px;
+            padding:6px; font-size:12px; display:flex; flex-direction:column; gap:5px; }
+  .mdtile.sel { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc); }
+  .mdthumb { width:100%; height:110px; object-fit:cover; border-radius:7px;
+             background:#000; cursor:pointer; }
+  .mdrow { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+  .mdrow button { padding:2px 8px; font-size:11.5px; }
+  #md_box { position:fixed; inset:0; background:rgba(0,0,0,.88); display:none;
+            align-items:center; justify-content:center; z-index:50; flex-direction:column; }
+  #md_box img, #md_box video { max-width:92vw; max-height:82vh; border-radius:10px; background:#000; }
+  #md_box .mdcap { color:var(--fg); margin-top:8px; font-size:13px; }
+  .mdbg { position:absolute; top:6px; right:6px; font-size:11px; padding:1px 6px;
+          background:rgba(0,0,0,.6); border-radius:6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎻 tg-userbot · оркестр</h1>
+  <span><span class="dot off" id="conn"></span><span id="connTxt">подключение…</span></span>
+  <span class="chip">аккаунтов: <b id="st_acc">–</b></span>
+  <span class="chip">групп: <b id="st_groups">–</b></span>
+  <span class="chip">участников: <b id="st_members">–</b></span>
+  <span class="chip">доступно для новых DM: <b id="st_dm">–</b></span>
+  <span class="chip">blacklist: <b id="st_bl">–</b></span>
+  <span class="chip">покрытие: <b id="st_cov">–</b></span>
+  <span class="chip" id="condChip">дирижёр: <b>свободен</b></span>
+  <span class="chip" id="cloudChip">☁ –</span>
+  <label style="margin-left:auto;color:var(--mut);font-size:12.5px">активный
+    <select id="accSel" style="width:130px;margin:0"></select>
+  </label>
+  <button class="danger" id="btnStop">⏹ Стоп (аккаунт)</button>
+  <button class="danger" id="btnStopAll">⏹ всем</button>
+</header>
+
+<main>
+<div>
+  <div class="card">
+    <h2>Аккаунты (по одному слоту задач на аккаунт, разные — параллельно)</h2>
+    <div class="tblwrap">
+      <table id="atab">
+        <thead><tr><th>имя</th><th>id</th><th>покрытие</th><th>DM сегодня</th><th>статус</th><th>задача</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button data-fan="sync">🎭 Синк всем</button>
+      <button data-fan="scrape">🎭 Scrape всем</button>
+      <button data-fan="watch">🎭 Watch всем</button>
+      <button data-fan="probe">🧹 Probe всем</button>
+      <button data-fan="privacy">🔒 Приватность всем</button>
+      <button data-fan="align" title="догнать группы из общей базы + единая приватность + probe">🎯 Align всем</button>
+    </div>
+    <div class="l-dim" style="font-size:12px;margin-top:6px">
+      Новый аккаунт: в терминале <code>bot.py login --account имя</code> (код SMS вводится в терминале),
+      либо импорт готового session-файла ниже.
+    </div>
+    <div class="row" style="margin-top:6px">
+      <input type="text" id="imp_name" placeholder="имя" style="width:110px;margin:0">
+      <input type="text" id="imp_path" placeholder="C:\...\x.session" style="flex:1;margin:0">
+      <button id="imp_btn">импортировать</button>
+      <button id="btnAccList">обновить</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Действия для выбранного аккаунта</h2>
+    <div class="row">
+      <button data-act="sync">🔄 Синк групп</button>
+      <button data-act="scrape">👥 Scrape все</button>
+      <button data-act="scrape_sel">Scrape выбранные</button>
+      <button data-act="export">📤 Export CSV</button>
+      <button data-act="status">📊 Status</button>
+      <button data-act="probe" title="groups --probe: проверить права записи, закрыть непроходимые">🧹 Probe доступов</button>
+      <button data-act="privacy" title="максимальная конфиденциальность аккаунта (Nobody везде)">🔒 Приватность</button>
+      <button data-act="watch">👁 watch</button>
+      <button data-act="cloud" title="обновить облачное зеркало Supabase (агрегаты, без ников)">☁ зеркало</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>🖼 Медиа-библиотека (через «Избранное»)</h2>
+    <div class="row" style="margin-bottom:8px">
+      <input type="file" id="md_file" style="display:none" multiple>
+      <button id="md_pick">⬆ Загрузить файл(ы)</button>
+      <button id="md_pull">⇓ Pull из Избранного</button>
+      <button id="md_compare">⚖️ Сравнить с main</button>
+      <span class="l-dim" style="font-size:12px">загруженное и «Pull» оседают в Избранном аккаунта и в локальном кэше</span>
+    </div>
+    <div id="md_grid" class="mdgrid"></div>
+    <div class="l-dim" id="md_hint" style="font-size:12px;margin-top:6px">
+      нет медиа — загрузи файл или нажми Pull; ✗ = файл не в кэше (жми «sync» на плитке)
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Рассылка в группы (broadcast)</h2>
+    <textarea id="bc_text" placeholder="Текст сообщения…"></textarea>
+    <div class="row">
+      <label><input type="checkbox" id="bc_dry" checked> dry-run</label>
+      <label>пауза <input class="num" type="number" id="bc_lo" value="3">–<input class="num" type="number" id="bc_hi" value="8"> c</label>
+      <label>лимит <input class="num" type="number" id="bc_runs" placeholder="∞"></label>
+      <label>медиа <select id="bc_media" style="width:160px"><option value="">— без —</option></select></label>
+      <span style="flex:1"></span>
+      <button class="pri" id="bc_send">📨 Отправить</button>
+    </div>
+    <div class="l-dim" style="font-size:12px">ids — выделенные строки таблицы групп; аккаунт пишет только туда, где состоит; кросс-дедуп 24 ч</div>
+  </div>
+
+  <div class="card">
+    <h2>DM участникам (dmsend)</h2>
+    <textarea id="dm_text" placeholder="Текст личного сообщения… (добавь «ответь СТОП»)" style="min-height:56px"></textarea>
+    <div class="row">
+      <label><input type="checkbox" id="dm_dry" checked> dry-run</label>
+      <label>лимит <input class="num" type="number" id="dm_limit" value="10"></label>
+      <label>пауза <input class="num" type="number" id="dm_lo" value="20">–<input class="num" type="number" id="dm_hi" value="45"> c</label>
+      <label><input type="checkbox" id="dm_repeat"> repeat-ok</label>
+      <label>группа <select id="dm_group" style="width:160px"><option value="">все</option></select></label>
+      <label>медиа <select id="dm_media" style="width:160px"><option value="">— без —</option></select></label>
+      <span style="flex:1"></span>
+      <button class="pri" id="dm_send">📬 Отправить DM</button>
+    </div>
+    <div class="l-dim" style="font-size:12px">кросс-аккаунтная дедупликация: кому писал ЛЮБОЙ аккаунт — не повторит никто; дневной бюджет на аккаунт</div>
+  </div>
+
+  <div class="card">
+    <h2>🎼 Дирижёр — одна кампания на весь организм</h2>
+    <textarea id="cd_text" placeholder="Текст для всех целей… (dry по умолчанию)" style="min-height:56px"></textarea>
+    <div class="row">
+      <label>тип <select id="cd_kind" style="width:120px"><option value="broadcast">broadcast</option><option value="dm">dm</option></select></label>
+      <label><input type="checkbox" id="cd_dry" checked> dry-run</label>
+      <label>лимит <input class="num" type="number" id="cd_limit" value="20"></label>
+      <label>окно <input class="num" type="number" id="cd_window" value="6"> ч</label>
+      <label><input type="checkbox" id="cd_repeat"> repeat-ok</label>
+      <label>медиа <select id="cd_media" style="width:160px"><option value="">— без —</option></select></label>
+      <button class="pri" id="cd_send">🎼 Запустить дирижёра</button>
+    </div>
+    <div class="l-dim" style="font-size:12px;margin-top:6px">цели делятся между всеми включёнными аккаунтами; FloodWait одного — цель сразу подхватывает другой; DM-бюджеты на аккаунт; groups — только теми, кто в них состоит</div>
+  </div>
+
+  <div class="card">
+    <h2>Blacklist</h2>
+    <div class="row">
+      <input type="text" id="bl_value" placeholder="user_id или @ник" style="width:180px;margin:0">
+      <input type="text" id="bl_reason" placeholder="причина" style="width:160px;margin:0">
+      <button id="bl_add">＋ в blacklist</button>
+    </div>
+  </div>
+</div>
+
+<div>
+  <div class="card">
+    <h2>Живой лог (все аккаунты; фильтр по выбранному)</h2>
+    <div class="row" style="margin-bottom:8px">
+      <label><input type="checkbox" id="f_only_acc"> только выбранный аккаунт</label>
+      <label><input type="checkbox" id="autoscroll" checked> автопрокрутка</label>
+      <button id="clearLog" style="margin-left:auto">очистить вид</button>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <div class="card">
+    <h2>Группы (<span id="gcount">0</span>)</h2>
+    <div class="tblwrap">
+      <table id="gtab">
+        <thead><tr><th></th><th>id</th><th>название</th><th>участн.</th><th>в рассылке</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Последние кампании</h2>
+    <div class="tblwrap" style="max-height:170px">
+      <table id="ctab">
+        <thead><tr><th>#</th><th>тип</th><th>аккаунт</th><th>когда</th><th>ok</th><th>fail</th><th>текст</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</main>
+<div id="md_box"><div id="md_host"></div><div class="mdcap" id="md_cap"></div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const log = $('log');
+let state = null;
+const ACC_COLORS = {};
+function accColor(name){
+  if (!ACC_COLORS[name]) {
+    const h = [...name].reduce((a,c)=>(a*31+c.charCodeAt(0))%360, 7);
+    ACC_COLORS[name] = `hsl(${h} 70% 65%)`;
+  }
+  return ACC_COLORS[name];
+}
+
+function addLog(ev){
+  if ($('f_only_acc').checked && ev.account && $('accSel').value
+      && ev.account !== $('accSel').value && ev.account !== '*') return;
+  const d = document.createElement('div');
+  let cls = 'l-dim';
+  const t = ev.text || '';
+  if (ev.type === 'job' || t.startsWith('▶') || t.startsWith('■')) cls = 'l-cmd';
+  else if (t.includes('fail') || t.includes('Error') || t.includes('ошибка') || t.includes('Нечего')) cls = 'l-fail';
+  else if (t.trimStart().startsWith('ok') || t.includes('Готово') || t.includes('Добавлено')) cls = 'l-ok';
+  else if (t.includes('FloodWait') || t.includes('cooldown') || t.includes('закрыт') || t.includes('бюджет')) cls = 'l-warn';
+  d.className = cls;
+  const tag = ev.account && ev.account !== 'web' ? ev.account : (ev.job||'');
+  d.innerHTML = `<span class="l-dim">${ev.ts||''}</span> ` +
+    (tag ? `<span style="color:${accColor(tag)}">[${esc(tag)}]</span> ` : '') +
+    esc(t);
+  log.appendChild(d);
+  while (log.childElementCount > 2000) log.removeChild(log.firstChild);
+  if ($('autoscroll').checked) log.scrollTop = log.scrollHeight;
+}
+function esc(s){ return String(s||'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+async function refresh(){
+  let s;
+  try{
+    const r = await fetch('/api/state');
+    s = await r.json();
+    if (!r.ok || s.error){ $('connTxt').textContent = 'ошибка: ' + (s.error||r.status); return; }
+  }catch(e){ $('connTxt').textContent='нет связи'; return; }
+  state = s;
+  $('st_acc').textContent = s.accounts.length;
+  $('st_groups').textContent = s.groups;
+  $('st_members').textContent = s.members.toLocaleString('ru');
+  $('st_dm').textContent = s.dm_available.toLocaleString('ru');
+  $('st_bl').textContent = s.blacklist;
+  $('st_cov').textContent = `${s.writable_groups||0} пишут / ${s.covered_groups||0} покрыто / ${s.groups}`;
+  { const cl = s.cloud_last, cj = s.jobs && s.jobs.cloud;
+    // части строки: 'ok'/'ошибка' — литералы, cl.at — ISO-дата из локального маркера cloud.py (фикс. формат); внешнего текста нет
+    $('cloudChip').innerHTML = cj ? '☁ <b class="st-run">push…</b>'
+      : cl ? `☁ ${cl.error?'<b style="color:var(--err)">ошибка</b>':'ok'} ${(cl.at||'').slice(11,16)}`
+      : '☁ не пушено'; }
+  const cond = (s.jobs||{}).conductor;
+  $('condChip').innerHTML = cond ? `дирижёр: <b class="st-run">${esc(cond.name)} с ${esc((cond.started||'').slice(11,16))} UTC</b> <button class="danger" id="condStop" style="padding:1px 7px;font-size:11.5px">⏹</button>`
+                                 : 'дирижёр: <b>свободен</b>';
+  const cstop = $('condStop'); if (cstop) cstop.onclick = () => stop('conductor');
+  $('gcount').textContent = s.groups;
+  renderMedia(s.media);
+
+  const sel = $('accSel'), keep = sel.value;
+  sel.innerHTML = s.accounts.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
+  if (keep && s.accounts.some(a=>a.name===keep)) sel.value = keep;
+
+  const tb = $('atab').querySelector('tbody'); tb.innerHTML = '';
+  for (const a of s.accounts){
+    const tr = document.createElement('tr');
+    let status = a.flooded ? `<span class="st-flood">cooldown</span>`
+                 : a.enabled ? `<span class="l-ok">он</span>` : `<span class="st-off">выкл</span>`;
+    let job = a.job ? `<span class="st-run">${esc(a.job.name)}</span> <button class="danger" data-stop="${esc(a.name)}" style="padding:1px 7px;font-size:11.5px">стоп</button>` : '—';
+    tr.innerHTML = `<td><b>${esc(a.name)}</b></td><td>${a.user_id||'?'}</td>
+      <td>${a.groups_covered||0}</td>
+      <td>${a.dm_today}/${a.daily_budget||'∞'}</td><td>${status}</td><td>${job}</td>
+      <td><button data-toggle="${esc(a.name)}" data-on="${a.enabled?1:0}" style="padding:1px 7px;font-size:11.5px">${a.enabled?'выкл':'вкл'}</button></td>`;
+    tb.appendChild(tr);
+  }
+  tb.querySelectorAll('[data-stop]').forEach(b => b.onclick = () => stop(b.dataset.stop));
+  tb.querySelectorAll('[data-toggle]').forEach(b => b.onclick = () =>
+    run({action:'accounts', op: b.dataset.on==='1' ? 'disable':'enable', name: b.dataset.toggle}));
+
+  const gtb = $('gtab').querySelector('tbody');
+  const checked = new Set([...gtb.querySelectorAll('input:checked')].map(i=>i.value));
+  gtb.innerHTML = '';
+  const opt = $('dm_group'), optVal = opt.value;
+  opt.innerHTML = '<option value="">все</option>';
+  for (const g of s.group_rows){
+    // все строковые поля из БД проходят esc(); числа — из SQL COUNT/id
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><input type="checkbox" value="${g.id}"></td>
+      <td>${g.id}</td><td class="title" title="${esc(g.title)}">${esc(g.title)}</td>
+      <td>${g.members||0}</td><td>${g.in_broadcast?'✔':'—'}</td>`;
+    if (checked.has(String(g.id))) tr.querySelector('input').checked = true;
+    gtb.appendChild(tr);
+    const o = document.createElement('option');
+    o.value = g.id; o.textContent = `${g.title.slice(0,28)} (${g.members})`;
+    opt.appendChild(o);
+  }
+  opt.value = optVal;
+  const cb = $('ctab').querySelector('tbody'); cb.innerHTML = '';
+  for (const c of s.last_campaigns){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${c.id}</td><td>${c.kind}</td><td>${esc(c.account||'-')}</td>
+      <td>${(c.created_at||'').slice(5,16)}</td>
+      <td style="color:var(--ok)">${c.ok}</td><td style="color:var(--err)">${c.fail}</td>
+      <td class="title" title="${esc(c.text)}">${esc((c.text||'').slice(0,40))}</td>`;
+    cb.appendChild(tr);
+  }
+}
+
+async function run(body){
+  const r = await fetch('/api/run', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json();
+  if (j.error) addLog({type:'job', account: body.account||'*', text:'⚠ ' + j.error});
+  setTimeout(refresh, 250);
+}
+async function fanout(action){
+  const r = await fetch('/api/fanout', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})});
+  const j = await r.json();
+  for (const [acc,res] of Object.entries(j.results||{}))
+    addLog({type:'job', account:acc, text:`🎭 fanout ${action}: ${res}`});
+  setTimeout(refresh, 250);
+}
+async function stop(account){
+  const r = await fetch('/api/stop', {method:'POST',
+      headers:{'Content-Type':'application/json'}, body: JSON.stringify({account})});
+  const j = await r.json();
+  if (j.error || !j.ok) addLog({type:'job', account: account||'*', text:'⚠ нечего останавливать'});
+  setTimeout(refresh, 500);
+}
+document.querySelectorAll('button[data-act]').forEach(b => b.onclick = () => {
+  const a = b.dataset.act, account = $('accSel').value || 'main';
+  if (a === 'scrape_sel'){
+    const ids = [...document.querySelectorAll('#gtab input:checked')].map(i=>+i.value);
+    if (!ids.length) return addLog({type:'job', text:'⚠ выбери группы в таблице'});
+    return run({action:'scrape', account, ids});
+  }
+  if (a === 'export' || a === 'status') return run({action:a});
+  run({action:a, account});
+});
+document.querySelectorAll('button[data-fan]').forEach(b => b.onclick = () => fanout(b.dataset.fan));
+$('bc_send').onclick = () => run({action:'broadcast', account: $('accSel').value,
+  text: $('bc_text').value, dry: $('bc_dry').checked,
+  media: $('bc_media').value || "",
+  delay_min: +$('bc_lo').value, delay_max: +$('bc_hi').value,
+  max_runs: +$('bc_runs').value || 0,
+  ids: [...document.querySelectorAll('#gtab input:checked')].map(i=>+i.value)});
+$('dm_send').onclick = () => run({action:'dmsend', account: $('accSel').value,
+  text: $('dm_text').value, dry: $('dm_dry').checked,
+  media: $('dm_media').value || "",
+  limit: +$('dm_limit').value || 10,
+  delay_min: +$('dm_lo').value, delay_max: +$('dm_hi').value,
+  repeat_ok: $('dm_repeat').checked, group: +$('dm_group').value || 0});
+$('bl_add').onclick = () => run({action:'blacklist_add',
+  value: $('bl_value').value, reason: $('bl_reason').value || 'web'});
+$('cd_send').onclick = () => run({action:'conduct', kind: $('cd_kind').value,
+  text: $('cd_text').value, dry: $('cd_dry').checked,
+  media: $('cd_media').value || "",
+  limit: +$('cd_limit').value || 0, window: +$('cd_window').value || 6,
+  repeat_ok: $('cd_repeat').checked});
+$('imp_btn').onclick = () => {
+  if (!$('imp_name').value || !$('imp_path').value)
+    return addLog({type:'job', text:'⚠ импорт: имя и путь до *.session'});
+  run({action:'accounts', op:'import', name:$('imp_name').value, value:$('imp_path').value});
+};
+$('btnStop').onclick = () => stop($('accSel').value || 'main');
+$('btnStopAll').onclick = () => stop('all');
+$('clearLog').onclick = () => log.innerHTML = '';
+$('btnAccList').onclick = refresh;
+
+// ---------- медиа-библиотека («Избранное» как хранилище, кэш на диске) ----------
+// все строковые поля проходят esc(); id/size — числа из SQLite
+function mediaOpt(m){
+  return `<option value="${m.id}">#${m.id} ${esc((m.title||'').slice(0,16))}${m.ok?'':' ✗'}</option>`;
+}
+let lastMediaSig = "";
+function renderMedia(list){
+  const sig = JSON.stringify(list || []);
+  if (sig === lastMediaSig) return;   // библиотека не менялась — не трогаем сетку (клики живые)
+  lastMediaSig = sig;
+  for (const id of ['bc_media','dm_media','cd_media']){
+    const sel = $(id), keep = sel.value;
+    sel.innerHTML = '<option value="">— без —</option>' +
+      (list||[]).filter(m=>m.ok).map(mediaOpt).join('');
+    if ([...sel.options].some(o=>o.value===keep)) sel.value = keep;
+  }
+  const g = $('md_grid'); g.innerHTML = '';
+  (list||[]).forEach(m=>{
+    const t = document.createElement('div'); t.className = 'mdtile';
+    const src = `/api/media/${m.id}/file`;
+    const thumb = m.ok
+      ? (m.kind==='photo' ? `<img class="mdthumb" loading="lazy" src="${src}" alt="">`
+        : m.kind==='video' ? `<video class="mdthumb" src="${src}#t=0.4" preload="metadata" muted></video>`
+        : `<div class="mdthumb" style="display:flex;align-items:center;justify-content:center;font-size:30px">📎</div>`)
+      : `<div class="mdthumb" style="display:flex;align-items:center;justify-content:center;color:var(--err)">✗ кэш</div>`;
+    t.innerHTML = `<div style="position:relative">${thumb}<span class="badge mdbg">${esc(m.kind)}</span></div>
+      <div title="${esc(m.title)}">${esc((m.title||'').slice(0,24))} · ${(m.size/1048576).toFixed(1)} МБ</div>
+      <div class="mdrow">
+        <button data-a="play" ${m.ok?'':'disabled'}>▶</button>
+        <button data-a="use" ${m.ok?'':'disabled'}>📎</button>
+        <button data-a="sync" title="подтянуть файл из Избранного в кэш">⇩</button>
+        <button data-a="del" class="danger" title="убрать из библиотеки">✕</button>
+      </div>`;
+    t.querySelectorAll('button').forEach(b => b.onclick = () => {
+      const a = b.dataset.a;
+      if (a==='play') openMdb(m);
+      else if (a==='use'){ for (const s of ['bc_media','dm_media','cd_media']) $(s).value = String(m.id);
+        addLog({type:'job', text:`📎 медиа #${m.id} выбрано во все формы кампаний`}); }
+      else if (a==='sync') run({action:'media', op:'sync', value:String(m.id), account: m.account});
+      else if (a==='del') run({action:'media', op:'del', value:String(m.id)});
+    });
+    t.querySelector('.mdthumb').onclick = () => openMdb(m);
+    g.appendChild(t);
+  });
+  $('md_hint').textContent = (list&&list.length)
+    ? `в библиотеке: ${list.length} (${list.filter(m=>!m.ok).length} без кэша — «⇩» скачает обратно из Избранного)`
+    : 'пусто: загрузи файл (⬆) или возьми из «Избранного» (⇓ Pull)';
+}
+function openMdb(m){
+  const host = $('md_host');
+  host.innerHTML = m.kind==='video' ? `<video src="/api/media/${m.id}/file" controls autoplay muted playsinline></video>`
+    : m.kind==='photo' ? `<img src="/api/media/${m.id}/file" alt="">`
+    : `<div class="mdcap"><a href="/api/media/${m.id}/file" download>📎 ${esc(m.title)}</a> — скачать файл</div>`;
+  $('md_cap').textContent = `#${m.id} · ${m.kind} · ${(m.size/1048576).toFixed(1)} МБ · Избранное «${m.account}» (msg ${m.msg_id})`;
+  $('md_box').style.display = 'flex';
+}
+$('md_box').onclick = e => {
+  if (e.target.id==='md_box'){ $('md_box').style.display='none'; $('md_host').innerHTML=''; }
+};
+window.addEventListener('keydown', e=>{ if (e.key==='Escape'){ $('md_box').style.display='none'; $('md_host').innerHTML=''; } });
+$('md_pick').onclick = () => $('md_file').click();
+$('md_file').onchange = async () => {
+  for (const f of $('md_file').files){
+    const fd = new FormData();
+    fd.append('file', f); fd.append('account', $('accSel').value || 'main');
+    addLog({type:'job', text:`⬆ загрузка ${f.name} (${(f.size/1048576).toFixed(1)} МБ) → Избранное…`});
+    try{
+      const r = await fetch('/api/media/upload', {method:'POST', body: fd});
+      const j = await r.json();
+      addLog({type:'job', text: j.error ? `⚠ upload: ${j.error}` : `⬆ ${f.name}: media add запущен`});
+    }catch(e){ addLog({type:'job', text:`⚠ upload: ${e}`}); }
+  }
+  $('md_file').value = '';
+  setTimeout(refresh, 1500);
+};
+$('md_pull').onclick = () => run({action:'media', op:'pull', account: $('accSel').value || 'main', limit: 50});
+$('md_compare').onclick = () => run({action:'compare', account: $('accSel').value || 'work2', other: 'main'});
+
+// SSE живой лог; дедуп по seq, сброс при смене boot (перезапуск сервера)
+let lastSeq = 0, lastBoot = null;
+function connect(){
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { $('conn').classList.remove('off'); $('connTxt').textContent = 'live'; };
+  es.onerror = () => { $('conn').classList.add('off'); $('connTxt').textContent = 'переподключение…'; };
+  es.onmessage = e => { const ev = JSON.parse(e.data);
+    if (ev.boot && ev.boot !== lastBoot) { lastBoot = ev.boot; lastSeq = 0; }
+    if (ev.seq && ev.seq <= lastSeq) return;
+    lastSeq = ev.seq || lastSeq + 1;
+    addLog(ev); if (ev.type === 'done') refresh(); };
+}
+connect();
+refresh();
+setInterval(refresh, 4000);
+</script>
+</body>
+</html>
