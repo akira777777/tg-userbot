@@ -3,6 +3,12 @@
 # Strict protection against credential leakage and build context bloat
 # ==============================================================================
 
+# --- Git Version Control (CRITICAL) ---
+.git/
+.git/**
+.gitignore
+.gitattributes
+
 # --- Sensitive Credentials & Environment Files (CRITICAL) ---
 .env
 .env.*
