@@ -377,6 +377,15 @@
       "lastAccessed": "2026-11-08T05:51:11.701Z",
       "accessCount": 0,
       "expiresAt": "2026-12-08T05:51:11.701Z"
+    },
+    "cmd-1794117085134": {
+      "key": "cmd-1794117085134",
+      "value": "{\"command\":\"Get-Content -Raw control\\\\main.py; Get-Content -Raw control\\\\worker.py | Select-Object -First 80; Get-Content -Raw control\\\\controller_bot.py\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:51:25.134Z",
+      "lastAccessed": "2026-11-08T05:51:25.134Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:51:25.134Z"
     }
   },
   "version": "3.0.0"
