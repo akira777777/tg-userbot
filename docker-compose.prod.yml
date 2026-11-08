@@ -1,81 +1,41 @@
-# docker-compose.prod.yml — продакшен-стек
-# Используется в production (автоскейлинг, мониторинг, логирование)
-# docker-compose -f docker-compose.prod.yml up -d
+# ==============================================================================
+# Production Docker Compose Configuration for tg-userbot
+# Services:
+#   - db: PostgreSQL 16 Alpine
+#   - redis: Redis 7 Alpine
+#   - userbot_worker: Mini App Queue Processor (control.main worker)
+#   - controller_bot: Telegram Bot API Controller (control.main telegram-bot)
+#   - web: Management Web Panel & Log Streamer (web.py)
+# ==============================================================================
 
 services:
-  # ───── ПРИЛОЖЕНИЕ (автоскейлинг) ─────
-  app:
-    image: ghcr.io/novra/tg-userbot:latest
-    deploy:
-      replicas: 4
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 3
-        window: 120s
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-    environment:
-      - TZ=Europe/Moscow
-      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-      - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY}
-      - REDIS_URL=redis://redis:6379/0
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_USER=tg_userbot
-      - DB_PASSWORD=${DB_PASSWORD}
-      - DB_NAME=tg_userbot_db
-      - DASHBOARD_URL=${DASHBOARD_URL}
-      - TG_CHANNEL_ID=${TG_CHANNEL_ID}
-      - TG_GROUP_ID=${TG_GROUP_ID}
-      - TG_ADMIN_ID=${TG_ADMIN_ID}
-      - WORKERS=4
-    ports:
-      - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ───── БАЗА ДАННЫХ ─────
+  # ───── POSTGRESQL 16 DATABASE ─────
   db:
     image: postgres:16-alpine
     container_name: tg-userbot-db
+    restart: unless-stopped
     deploy:
       resources:
         limits:
-          cpus: '1'
+          cpus: '1.0'
           memory: 512M
         reservations:
           cpus: '0.5'
           memory: 256M
     environment:
-      POSTGRES_USER: tg_userbot
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: tg_userbot_db
+      POSTGRES_USER: ${POSTGRES_USER:-tg_userbot}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tg_userbot_secure_password}
+      POSTGRES_DB: ${POSTGRES_DB:-tg_userbot_db}
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
-      - db_data:/var/lib/postgresql/data
-      - ./supabase/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+      - postgres_data:/var/lib/postgresql/data
+      - ./supabase/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tg_userbot -d tg_userbot_db"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-tg_userbot} -d $${POSTGRES_DB:-tg_userbot_db}"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 5s
     networks:
       - tg-userbot-network
     logging:
@@ -84,10 +44,11 @@ services:
         max-size: "20m"
         max-file: "5"
 
-  # ───── REDIS ─────
+  # ───── REDIS 7 IN-MEMORY CACHE & BROKER ─────
   redis:
     image: redis:7-alpine
     container_name: tg-userbot-redis
+    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -104,6 +65,7 @@ services:
       interval: 3s
       timeout: 3s
       retries: 5
+      start_period: 3s
     networks:
       - tg-userbot-network
     logging:
@@ -112,42 +74,126 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ───── TELEGRAM WEBHOOK (для Webhook-режима) ─────
-  telegram-webhook:
-    image: python:3.12-slim-bookworm
+  # ───── USERBOT COMMAND WORKER (BACKGROUND CONSUMER) ─────
+  userbot_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tg-userbot:latest
+    container_name: tg-userbot-worker
+    restart: unless-stopped
+    command: ["python", "-m", "control.main", "worker"]
     deploy:
-      replicas: 2
+      replicas: 1
       restart_policy:
         condition: on-failure
         delay: 5s
-        max_attempts: 3
+        max_attempts: 5
+        window: 120s
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+    environment:
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+      - BOT_TOKEN=${BOT_TOKEN:-${TG_BOT_TOKEN:-}}
+      - MINI_APP_URL=${MINI_APP_URL:-${DASHBOARD_URL:-https://your-app.vercel.app}}
+      - OWNER_TELEGRAM_IDS=${OWNER_TELEGRAM_IDS:-${TG_ADMIN_ID:-123456789}}
+      - CONTROL_SESSION_SECRET=${CONTROL_SESSION_SECRET:-change-me-in-production}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY:-}
+      - WORKER_ID=${WORKER_ID:-worker-1}
+      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-2.0}
+      - LEASE_SECONDS=${LEASE_SECONDS:-300}
+      - CLAIM_BATCH_SIZE=${CLAIM_BATCH_SIZE:-5}
+      - FORWARD_PRIVACY=${FORWARD_PRIVACY:-1}
+      - USERBOT_DB=/app/data/userbot.db
+      - USERBOT_SESSIONS=/app/sessions
+      - USERBOT_MEDIA=/app/media_cache
+      - API_ID=${API_ID:-}
+      - API_HASH=${API_HASH:-}
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=${POSTGRES_USER:-tg_userbot}
+      - DB_PASSWORD=${DB_PASSWORD:-tg_userbot_secure_password}
+      - DB_NAME=${POSTGRES_DB:-tg_userbot_db}
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - userbot_sessions:/app/sessions
+      - userbot_data:/app/data
+      - userbot_media:/app/media_cache
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "control.main", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    networks:
+      - tg-userbot-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ───── TELEGRAM BOT CONTROLLER (TELEGRAM BOT API /START) ─────
+  controller_bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tg-userbot:latest
+    container_name: tg-userbot-controller
+    restart: unless-stopped
+    command: ["python", "-m", "control.main", "telegram-bot"]
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
         window: 120s
       resources:
         limits:
           cpus: '0.5'
           memory: 256M
         reservations:
-          cpus: '0.25'
-          memory: 128M
-    volumes:
-      - ./src:/app/src:ro
-    working_dir: /app
-    command:
-      - python
-      - -m
-      - uvicorn
-      - src.tg_userbot.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
+          cpus: '0.1'
+          memory: 64M
     environment:
-      - TG_BOT_TOKEN=${TG_BOT_TOKEN}
-      - WEBHOOK_URL=https://your-domain.com/webhook
-    ports:
-      - "8080:8080"
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+      - BOT_TOKEN=${BOT_TOKEN:-${TG_BOT_TOKEN:-}}
+      - MINI_APP_URL=${MINI_APP_URL:-${DASHBOARD_URL:-https://your-app.vercel.app}}
+      - OWNER_TELEGRAM_IDS=${OWNER_TELEGRAM_IDS:-${TG_ADMIN_ID:-123456789}}
+      - CONTROL_SESSION_SECRET=${CONTROL_SESSION_SECRET:-change-me-in-production}
+      - SUPABASE_URL=${SUPABASE_URL:-}
+      - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY:-}
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=${POSTGRES_USER:-tg_userbot}
+      - DB_PASSWORD=${DB_PASSWORD:-tg_userbot_secure_password}
+      - DB_NAME=${POSTGRES_DB:-tg_userbot_db}
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
-      - app
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "control.main", "healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     networks:
       - tg-userbot-network
     logging:
@@ -156,107 +202,62 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # ───── MONITORING (Prometheus + Grafana) ─────
-  prometheus:
-    image: prom/prometheus:v2.55.0
-    container_name: tg-userbot-prometheus
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-    volumes:
-      - prometheus_data:/prometheus
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
+  # ───── WEB MANAGEMENT PANEL & STREAMER (PORT 8642) ─────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tg-userbot:latest
+    container_name: tg-userbot-web
+    restart: unless-stopped
+    command: ["python", "web.py"]
     ports:
-      - "9090:9090"
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  grafana:
-    image: grafana/grafana:11.0.0
-    container_name: tg-userbot-grafana
+      - "8642:8642"
     deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
       resources:
         limits:
           cpus: '0.5'
           memory: 256M
         reservations:
-          cpus: '0.25'
-          memory: 128M
+          cpus: '0.1'
+          memory: 64M
     environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
+      - WEBBOT_HOST=0.0.0.0
+      - WEBBOT_PORT=8642
+      - USERBOT_DB=/app/data/userbot.db
+      - USERBOT_SESSIONS=/app/sessions
+      - USERBOT_MEDIA=/app/media_cache
+      - API_ID=${API_ID:-}
+      - API_HASH=${API_HASH:-}
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_USER=${POSTGRES_USER:-tg_userbot}
+      - DB_PASSWORD=${DB_PASSWORD:-tg_userbot_secure_password}
+      - DB_NAME=${POSTGRES_DB:-tg_userbot_db}
+      - REDIS_URL=redis://redis:6379/0
     volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
-    ports:
-      - "3000:3000"
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ───── ELK (логирование) ─────
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
-    container_name: tg-userbot-elasticsearch
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    environment:
-      - discovery.type=single-node
-      - node.name=elasticsearch
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-    volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "5"
-
-  logstash:
-    image: docker.elastic.co/logstash/logstash:8.17.0
-    container_name: tg-userbot-logstash
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-    volumes:
-      - ./monitoring/logstash/pipeline.yml:/usr/share/logstash/pipeline/logstash.yml:ro
-      - ./monitoring/logstash/config/logstash.conf:/usr/share/logstash/conf.d/logstash.conf:ro
+      - userbot_sessions:/app/sessions
+      - userbot_data:/app/data
+      - userbot_media:/app/media_cache
     depends_on:
-      - elasticsearch
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/api/state')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     networks:
       - tg-userbot-network
     logging:
@@ -265,68 +266,27 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.17.0
-    container_name: tg-userbot-kibana
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-    environment:
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-    ports:
-      - "5601:5601"
-    depends_on:
-      - elasticsearch
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ───── MEDIA STORAGE ─────
-  media:
-    image: alpine:latest
-    container_name: tg-userbot-media
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-    volumes:
-      - media_storage:/media
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-# ==================== NETWORKS & VOLUMES ====================
+# ==============================================================================
+# NETWORKS & VOLUMES
+# ==============================================================================
 networks:
   tg-userbot-network:
+    name: tg-userbot-network
     driver: bridge
 
 volumes:
-  db_data:
+  postgres_data:
+    name: tg-userbot-postgres-data
     driver: local
   redis_data:
+    name: tg-userbot-redis-data
     driver: local
-  media_storage:
+  userbot_sessions:
+    name: tg-userbot-sessions
     driver: local
-  prometheus_data:
+  userbot_data:
+    name: tg-userbot-data
     driver: local
-  grafana_data:
-    driver: local
-  elasticsearch_data:
+  userbot_media:
+    name: tg-userbot-media
     driver: local
