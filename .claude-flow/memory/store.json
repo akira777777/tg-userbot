@@ -161,6 +161,15 @@
       "lastAccessed": "2026-11-08T05:38:48.064Z",
       "accessCount": 0,
       "expiresAt": "2026-12-08T05:38:48.064Z"
+    },
+    "cmd-1794116597316": {
+      "key": "cmd-1794116597316",
+      "value": "{\"command\":\"Get-Content -Raw dashboard\\\\app\\\\api\\\\control\\\\commands\\\\route.js; Get-Content -LiteralPath 'dashboard\\\\app\\\\api\\\\control\\\\commands\\\\[id]\\\\route.js' -Raw; Get-Content -Raw dashboard\\\\app\\\\api\\\\control\\\\confirmations\\\\route.js; Get-Content -Raw dashboard\\\\lib\\\\api.js; Get-Content -Raw dashboard\\\\package.json; Get-Content -Raw dashboard\\\\app\\\\api\\\\control\\\\session\\\\route.js\",\"exitCode\":0,\"success\":true}",
+      "namespace": "commands",
+      "storedAt": "2026-11-08T05:43:17.316Z",
+      "lastAccessed": "2026-11-08T05:43:17.316Z",
+      "accessCount": 0,
+      "expiresAt": "2026-12-08T05:43:17.316Z"
     }
   },
   "version": "3.0.0"
