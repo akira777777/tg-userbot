@@ -63,7 +63,7 @@ class ForwardPrivacyManager:
         Никогда не вызывает forward_messages.
         """
         if file is not None:
-            return await client.send_file(peer, file, caption=caption or message or None)
+            return await client.send_file(peer, file, caption=caption or message or "")
         if message:
             return await client.send_message(peer, message)
         raise ValueError("нужно текст или файл для отправки")
