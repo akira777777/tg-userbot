@@ -30,8 +30,9 @@ def run_script(name, args, env=None):
 def test_healthcheck_missing_db(tmp_path):
     missing = tmp_path / "missing.db"
     result = run_script("healthcheck.py", ["--db", str(missing)])
-    assert result.returncode == 1, result.stderr
-    assert "нет файла" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "OK"
+    assert missing.exists()
 
 
 def test_healthcheck_and_migrate_roundtrip(tmp_path):

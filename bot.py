@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import collections
 import csv
+import json
 import mimetypes
 import os
 import random
@@ -36,6 +37,8 @@ ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("USERBOT_DB", ROOT / "userbot.db"))
 SESSION_DIR = Path(os.environ.get("USERBOT_SESSIONS", ROOT / "sessions"))
 MEDIA_DIR = Path(os.environ.get("USERBOT_MEDIA", ROOT / "media_cache"))
+SECRETS_PATH = Path(os.environ.get("USERBOT_SECRETS", ROOT / "account-secrets.json"))
+STOP_PATH = Path(os.environ.get("USERBOT_STOP", ROOT / "control-stop.json"))
 ACCOUNTS_RE = re.compile(r"^[a-z0-9_\-]{1,32}$")
 LEGACY_SESSION = os.environ.get("USERBOT_SESSION", str(ROOT / "userbot.session"))
 STOP_RE = re.compile(r"^(stop|opt.?out|unsubscribe|отпиш|отпис|стоп)", re.I)
@@ -81,9 +84,12 @@ CREATE TABLE IF NOT EXISTS media(
   size INTEGER, path TEXT, added_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ag_account ON account_groups(account);
+CREATE INDEX IF NOT EXISTS idx_ag_group ON account_groups(group_id);
 CREATE INDEX IF NOT EXISTS idx_sources_group ON member_sources(group_id);
 CREATE INDEX IF NOT EXISTS idx_sources_user ON member_sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_sent_campaign ON sent(campaign);
+CREATE INDEX IF NOT EXISTS idx_sent_ts ON sent(ts);
+CREATE INDEX IF NOT EXISTS idx_campaigns_kind ON campaigns(kind);
 CREATE INDEX IF NOT EXISTS idx_members_bot ON members(is_bot);
 """
 
@@ -137,6 +143,11 @@ def migrate(conn):
     _add_column(conn, "members", "access_hash", "INTEGER")
     _add_column(conn, "members", "dm_block", "TEXT")
     _add_column(conn, "accounts", "broadcast_budget", "INTEGER DEFAULT 15")
+    # sent.account появляется только после ALTER, поэтому индекс нельзя
+    # создавать в первом проходе SCHEMA на уже существующей базе.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sent_account_status_ts ON sent(account, status, ts)"
+    )
     conn.execute("INSERT OR IGNORE INTO accounts(name,session,added_at) VALUES('main',?,?)",
                  (LEGACY_SESSION, now_iso()))
     conn.commit()
@@ -203,10 +214,71 @@ def trim_to_cap(rows, cap, used):
 
 def daily_cap(conn, account, kind):
     col = "daily_budget" if kind == "dm" else "broadcast_budget"
-    bud = conn.execute(f"SELECT {col} AS c FROM accounts WHERE name=?", (account,)).fetchone()
+    bud = conn.execute(f"SELECT {col} AS c FROM accounts WHERE name=?", (account,)).fetchone()  # nosec B608
     if not bud or bud["c"] is None:
         return 30 if kind == "dm" else 15
     return bud["c"]
+
+
+def load_account_secrets():
+    if not SECRETS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SECRETS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_account_secrets(data):
+    SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SECRETS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        os.chmod(SECRETS_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def persist_account_secret(name, api_id, api_hash):
+    data = load_account_secrets()
+    current = data.get(name, {})
+    if api_id:
+        current["api_id"] = str(api_id)
+    if api_hash:
+        current["api_hash"] = str(api_hash)
+    if current:
+        data[name] = current
+    elif name in data:
+        del data[name]
+    save_account_secrets(data)
+
+
+def migrate_plaintext_secret(conn, account, row):
+    if not row or not (row["api_id"] or row["api_hash"]):
+        return
+    persist_account_secret(account, row["api_id"], row["api_hash"])
+    conn.execute("UPDATE accounts SET api_id=NULL, api_hash=NULL WHERE name=?", (account,))
+    conn.commit()
+
+
+def stop_requested(account, started_at):
+    if not STOP_PATH.exists():
+        return False
+    try:
+        data = json.loads(STOP_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if str(data.get("at") or "") <= started_at:
+        return False
+    targets = data.get("accounts") or []
+    return "all" in targets or account in targets
+
+
+def request_stop(account):
+    STOP_PATH.write_text(
+        json.dumps({"accounts": [account or "all"], "at": now_iso()}, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def get_client(account="main", allow_flood=False):
@@ -222,8 +294,8 @@ def get_client(account="main", allow_flood=False):
         flood_guard(conn, account)
     session = (row["session"] if row and row["session"]
                else str(SESSION_DIR / f"{account}.session"))
-    # приоритет секретов: колонки реестра > env API_ID_<NAME> / API_ID_<число из имени>
-    # (work2 -> API_ID_WORK2, затем API_ID_2) > общий API_ID из .env
+    migrate_plaintext_secret(conn, account, row)
+    # приоритет секретов: файл account-secrets.json > env API_ID_<NAME> > общий API_ID
     tag = re.sub(r"[^A-Z0-9_]", "_", account.upper())
     m = re.search(r"(\d+)$", account)
     digit = m.group(1) if m else None
@@ -236,10 +308,9 @@ def get_client(account="main", allow_flood=False):
                 return v
         return None
 
-    api_id = (row["api_id"] if row and row["api_id"]
-              else _env_secret("API_ID") or ENV.get("API_ID"))
-    api_hash = (row["api_hash"] if row and row["api_hash"]
-                else _env_secret("API_HASH") or ENV.get("API_HASH"))
+    stored = load_account_secrets().get(account, {})
+    api_id = stored.get("api_id") or _env_secret("API_ID") or ENV.get("API_ID")
+    api_hash = stored.get("api_hash") or _env_secret("API_HASH") or ENV.get("API_HASH")
     conn.close()
     if not api_id or not api_hash:
         sys.exit("Нет API_ID/API_HASH. Заведи приложение на my.telegram.org и "
@@ -713,6 +784,21 @@ def dm_eligible_where(repeat_ok=False):
 
 # Тот же предикат, что у dmsend по умолчанию: status и панель считают одну очередь.
 DM_ELIGIBLE_WHERE = dm_eligible_where(False)
+NOT_YET_DMED = (
+    "NOT EXISTS (SELECT 1 FROM sent s JOIN campaigns c ON c.id=s.campaign "
+    "WHERE c.kind='dm' AND s.status='ok' AND s.target=CAST(m.user_id AS TEXT))"
+)
+
+
+def save_members(conn, users, gid):
+    """Пакетная вставка участников одной группы. Коммит остаётся на вызывающем."""
+    if not users:
+        return 0
+    before = conn.execute("SELECT COUNT(*) c FROM members").fetchone()["c"]
+    for user in users:
+        save_member(conn, user, gid)
+    after = conn.execute("SELECT COUNT(*) c FROM members").fetchone()["c"]
+    return after - before
 
 
 def save_member(conn, u, gid):
@@ -737,7 +823,7 @@ def save_member(conn, u, gid):
         params.append(int(access_hash))
     if sets:
         params.append(u.id)
-        conn.execute(f"UPDATE members SET {', '.join(sets)} WHERE user_id=?", params)
+        conn.execute(f"UPDATE members SET {', '.join(sets)} WHERE user_id=?", params)  # nosec B608
     conn.execute("INSERT OR IGNORE INTO member_sources(user_id,group_id) VALUES(?,?)", (u.id, gid))
     return cur.rowcount
 
@@ -798,7 +884,7 @@ def dm_targets(conn, group_id=None, repeat_ok=False, limit=None):
     Пустой профиль с username или access_hash остаётся: его можно адресовать.
     Имена людей, внутри которых есть буквы bot (Subbotina, Rabota), не отсекаются.
     """
-    q = f"SELECT m.* FROM members m WHERE {dm_eligible_where(repeat_ok)}"
+    q = f"SELECT m.* FROM members m WHERE {dm_eligible_where(repeat_ok)}"  # nosec B608
     p = []
     if group_id:
         q += " AND m.user_id IN (SELECT user_id FROM member_sources WHERE group_id=?)"
@@ -835,7 +921,11 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
     halt_reason = ""
     pause_lo, pause_hi = ordered_pause(
         getattr(args, "delay_min", 0), getattr(args, "delay_max", 0))
+    started_at = now_iso()
     for target in targets:
+        if stop_requested(account, started_at):
+            print(f"  остановка запрошена для «{account}»")
+            break
         label, peer, key = resolve(target)
         if args.dry_run:
             print(f"  [dry] -> {label}")
@@ -1071,8 +1161,8 @@ def cmd_accounts(args):
         import getpass
         api_id = getpass.getpass(f"api_id для «{name}» (пусто = общий .env): ").strip()
         api_hash = getpass.getpass(f"api_hash для «{name}»: ").strip()
-        conn.execute("UPDATE accounts SET api_id=?, api_hash=? WHERE name=?",
-                     (api_id or None, api_hash or None, name))
+        persist_account_secret(name, api_id, api_hash)
+        conn.execute("UPDATE accounts SET api_id=NULL, api_hash=NULL WHERE name=?", (name,))
     elif op == "budget":
         n = int(args.value)
         if not (0 <= n <= 500):
@@ -1244,6 +1334,12 @@ def resolve_media(conn, value):
     return str(p)
 
 
+def cmd_stop(args):
+    account = args.account or "all"
+    request_stop(account)
+    print(f"остановка запрошена: {account}")
+
+
 def cmd_cloud(args):
     """Облачное зеркало Supabase (push|status|test) — делегирует cloud.py."""
     code = subprocess.call([sys.executable, str(ROOT / "cloud.py"), args.op])
@@ -1256,10 +1352,26 @@ CLOUD_HOOK = {"cmd_broadcast", "cmd_dmsend", "cmd_conduct", "cmd_scrape",
               "cmd_media", "cmd_blacklist", "cmd_export"}
 
 
+def _skip_cloud_push(args) -> bool:
+    """Чтение не меняет зеркало: полный push после list/export только греет SQLite."""
+    name = getattr(args.func, "__name__", "")
+    if name == "cmd_export":
+        return True
+    if name == "cmd_blacklist" and getattr(args, "cmd", None) == "list":
+        return True
+    if name == "cmd_accounts" and getattr(args, "op", None) == "list":
+        return True
+    if name == "cmd_groups" and getattr(args, "list", False) and not getattr(args, "sync", False) and not getattr(args, "probe", False):
+        return True
+    return False
+
+
 def maybe_cloud_push(args):
     if os.environ.get("AUTO_CLOUD") != "1":
         return
     if getattr(args.func, "__name__", "") not in CLOUD_HOOK:
+        return
+    if _skip_cloud_push(args):
         return
     try:
         subprocess.Popen([sys.executable, str(ROOT / "cloud.py"), "push"],
@@ -1463,7 +1575,7 @@ async def cmd_compare(args):
     only_a = ea - eb
     only_b = eb - ea
     if only_a:
-        t = conn.execute("SELECT title FROM groups WHERE id IN (%s)" %
+        t = conn.execute("SELECT title FROM groups WHERE id IN (%s)" %  # nosec B608
                          ",".join("?" * len(only_a)), list(only_a)).fetchall()
         print(f"  только в «{a}» ({len(only_a)}): " + "; ".join(x["title"][:30] for x in t[:8]))
         print(f"  → догнать: bot.py align --account {b}")
@@ -1534,7 +1646,7 @@ def cmd_export(args):
 
 def cmd_status(args):
     conn = connect()
-    c = lambda t: conn.execute(f"SELECT COUNT(*) c FROM {t}").fetchone()["c"]
+    c = lambda t: conn.execute(f"SELECT COUNT(*) c FROM {t}").fetchone()["c"]  # nosec B608
     print(f"БД: {DB_PATH}")
     print(f"  групп в списке: {c('groups')} (активных в рассылке: "
           f"{conn.execute('SELECT COUNT(*) c FROM groups WHERE active=1 AND in_broadcast=1').fetchone()['c']})")
@@ -1559,7 +1671,7 @@ def cmd_status(args):
                           "ORDER BY s.ts DESC LIMIT 5"):
         print(f"    #{s['campaign']} {s['kind']} -> {s['target']}: {s['status']} ({s['ts']})")
     free = conn.execute(
-        f"SELECT COUNT(*) c FROM members m WHERE {DM_ELIGIBLE_WHERE}").fetchone()["c"]
+        f"SELECT COUNT(*) c FROM members m WHERE {DM_ELIGIBLE_WHERE}").fetchone()["c"]  # nosec B608
     print(f"  доступных для новых DM: {free}")
     print("  группы вне рассылки:")
     outside = conn.execute(
@@ -1873,10 +1985,15 @@ async def cmd_conduct(args):
         print(f"  передаю группу {gid} «{row['title'][:40]}» {name} → {other}")
         return True
 
+    started_at = now_iso()
+
     async def worker(name):
         p = players[name]
         skipped_groups = set()
         while _t.monotonic() < deadline and not stop_dm.is_set():
+            if stop_requested(name, started_at) or stop_requested("all", started_at):
+                print(f"  остановка запрошена для «{name}»")
+                return
             rem = cooldown_remaining(p)
             if rem:
                 await asyncio.sleep(min(rem + 1, 30))
@@ -2102,6 +2219,10 @@ def build_parser():
     p.add_argument("--limit", type=int, default=30,
                    help="pull: сколько последних сообщений Избранного просмотреть")
     p.set_defaults(func=cmd_media)
+
+    p = sub.add_parser("stop", help="остановить выполняемую рассылку аккаунта или всех аккаунтов")
+    p.add_argument("--account", default="all")
+    p.set_defaults(func=cmd_stop)
 
     p = sub.add_parser("cloud", help="облачное зеркало Supabase: push|status|test")
     p.add_argument("op", choices=["push", "status", "test"])

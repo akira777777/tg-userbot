@@ -1,6 +1,7 @@
 # секреты и доступы — НИКОГДА не в репозитории
 .env
 account-secrets.json
+control-stop.json
 *.session
 *.session-*
 *.session.unauth
