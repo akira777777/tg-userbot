@@ -74,6 +74,24 @@ def test_blacklist_add_is_supported():
     assert argv == ["blacklist", "add", "123", "--reason", "вручную"]
 
 
+def test_broadcast_repeat_ok_reaches_cli():
+    runtime = _runtime()
+    repeated = runtime._build_argv(
+        CommandKind.BROADCAST,
+        BroadcastPayload(text="ещё раз", repeat_ok=True),
+        "main",
+        CommandMode.DRY_RUN,
+    )
+    skipped = runtime._build_argv(
+        CommandKind.BROADCAST,
+        BroadcastPayload(text="ещё раз"),
+        "main",
+        CommandMode.DRY_RUN,
+    )
+    assert repeated is not None and "--repeat-ok" in repeated
+    assert skipped is not None and "--repeat-ok" not in skipped
+
+
 def test_delivery_mode_controls_dry_run():
     runtime = _runtime()
     broadcast = runtime._build_argv(

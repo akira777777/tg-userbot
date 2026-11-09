@@ -117,6 +117,8 @@ class UserbotRuntime:
         if kind == CommandKind.BROADCAST:
             args = ["broadcast", "--account", account]
             self._append_delivery_args(args, data)
+            if data.get("repeat_ok"):
+                args += ["--repeat-ok"]
             return self._with_mode(args, mode)
         if kind == CommandKind.DMSEND:
             args = ["dmsend", "--account", account, "--limit", str(data.get("limit") or 20)]

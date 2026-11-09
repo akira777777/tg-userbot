@@ -75,6 +75,7 @@ class BroadcastPayload(BaseModel):
     delay_min: float = Field(default=0.0, ge=0.0, le=3600.0)
     delay_max: float = Field(default=0.0, ge=0.0, le=3600.0)
     max_runs: int = Field(default=0, ge=0, le=10000)
+    repeat_ok: bool = False
 
     @model_validator(mode="after")
     def _check_delay_order(self) -> BroadcastPayload:

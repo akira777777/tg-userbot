@@ -31,6 +31,9 @@ dashboard/.next/
 dashboard/node_modules/
 dashboard/coverage/
 
+# Локальная отладка IDE: пути машины не должны попадать в репозиторий
+.vscode/launch.json
+
 # Инструменты и артефакты
 .serena/
 .claude-flow/
