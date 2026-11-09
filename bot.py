@@ -1737,7 +1737,14 @@ async def cmd_conduct(args):
                 can, why = classify_broadcast(ent)
                 if can:
                     writable.add(gid)
-                apply_write_edge(conn, n, gid, can, why)
+                    if args.dry_run:
+                        # Сухой прогон не возвращает чат в рассылку. Новую строку
+                        # покрытия запоминаем, уже записанный can_write=0 не затираем.
+                        record_edge(conn, n, gid)
+                    else:
+                        apply_write_edge(conn, n, gid, True, "")
+                else:
+                    apply_write_edge(conn, n, gid, False, why)
             edges[n] = writable
             print(f"  покрытие «{n}»: диалогов {len(emaps[n])}, можно писать {len(writable)}")
         conn.commit()

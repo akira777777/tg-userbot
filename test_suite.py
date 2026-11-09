@@ -438,7 +438,7 @@ class _Flood:
 
 def test_flood_pause_uses_server_seconds():
     from datetime import datetime, timedelta, timezone
-    start = datetime.now(timezone.utc)
+    start = datetime(2026, 11, 9, 12, 0, tzinfo=timezone.utc)
     until = bot.flood_pause_until(_Flood(12), now=start)
     got = datetime.fromisoformat(until)
     assert got == start + timedelta(seconds=12)
