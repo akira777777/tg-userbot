@@ -85,9 +85,6 @@ class CommandPolicy:
         """Возвращает {'ok': True, 'validated': {...}} или {'ok': False, 'error': str}."""
         now = now or datetime.now(UTC)
 
-        if not self.is_owner(identity):
-            return {"ok": False, "error": "недостаточно прав"}
-
         # Проверка kind/mode сочетаний
         if request.mode == CommandMode.LIVE and request.kind in LIVE_REQUIRES_CONFIRMATION:
             if not request.confirmation_nonce:

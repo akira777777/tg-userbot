@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { waitForTelegramInitData } from "../lib/telegram-init-data";
 
 const REFRESH_MS = 15_000;
 
@@ -38,10 +39,18 @@ export default function Home() {
     let timer;
     async function start() {
       try {
-        const initData = window.Telegram?.WebApp?.initData;
-        if (!initData) throw new Error("Открой панель кнопкой из чата с ботом Telegram.");
-        window.Telegram.WebApp.ready(); window.Telegram.WebApp.expand();
-        const session = await fetch("/api/control/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ initData }) });
+        let initData = "";
+        try {
+          initData = await waitForTelegramInitData();
+        } catch (reason) {
+          const host = window.location.hostname;
+          if (host !== "127.0.0.1" && host !== "localhost") throw reason;
+        }
+        const session = await fetch("/api/control/session", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(initData ? { initData } : { local: true }),
+        });
         if (!session.ok) throw new Error("Telegram не подтвердил доступ к панели.");
         await load(); setState("ready");
         timer = window.setInterval(() => load().catch((reason) => setError(reason.message)), REFRESH_MS);
@@ -51,7 +60,7 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [load]);
 
-  return <main className="wrap"><header><p className="eyebrow">TG USERBOT</p><h1>Панель управления</h1><p className="muted">Доступ только для владельца через Telegram.</p></header>
+  return <main className="wrap"><header><p className="eyebrow">TG USERBOT</p><h1>Панель управления</h1><p className="muted">Открой панель кнопкой из чата с ботом.</p></header>
     {state === "authorizing" && <p className="notice">Проверяю вход через Telegram…</p>}
     {state === "error" && <p className="notice error" role="alert">{error}</p>}
     {state === "ready" && data && <><Snapshot data={data} /><section className="panel"><h2>Управление</h2><p>Команды на выполнение будут подключены к единому локальному worker. До этого панель только читает состояние и не может запустить рассылку.</p></section></>}

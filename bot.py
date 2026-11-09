@@ -502,6 +502,8 @@ def slowmode_exceeds(entity, remaining_seconds):
 
 
 SPAM_ERRORS = {"PeerFloodError", "UserRestrictedError"}
+# Пауза аккаунта на время сервера. SlowModeWaitError сюда не входит: это лимит чата.
+ACCOUNT_FLOOD_ERRORS = {"FloodWaitError", "FloodPremiumWaitError"}
 
 PERMANENT_DM = {
     "UserPrivacyRestrictedError": "privacy",
@@ -525,6 +527,7 @@ PERMANENT_BROADCAST = {
     "TopicClosedError": "topic_closed",
     "UserNotParticipantError": "not_member",
     "ChatGuestSendForbiddenError": "no_send",
+    "ChatSendPlainForbiddenError": "no_send",
 }
 
 REASON_RU = {
@@ -556,7 +559,7 @@ def _error_name(exc):
 def send_error_class(exc):
     """flood | slowmode | spam | other. PeerFlood — spam, не обычный fail цели."""
     name = _error_name(exc)
-    if name == "FloodWaitError":
+    if name in ACCOUNT_FLOOD_ERRORS:
         return "flood"
     if name == "SlowModeWaitError":
         return "slowmode"
@@ -599,6 +602,48 @@ def spam_pause_until(now=None):
     return (now + timedelta(hours=24)).isoformat(timespec="seconds")
 
 
+def flood_pause_until(exc, now=None):
+    """Пауза на число секунд от сервера. Минимум 1 с, чтобы не крутить пустой цикл."""
+    now = now or datetime.now(timezone.utc)
+    seconds = int(getattr(exc, "seconds", 0) or 0)
+    if seconds < 1:
+        seconds = 1
+    return (now + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+
+def ordered_pause(delay_min, delay_max):
+    """Пара паузы для random.uniform. Перепутанные границы меняются местами."""
+    lo = float(delay_min or 0)
+    hi = float(delay_max or 0)
+    if lo < 0:
+        lo = 0.0
+    if hi < 0:
+        hi = 0.0
+    if hi > 0 and lo > hi:
+        lo, hi = hi, lo
+    return lo, hi
+
+
+def apply_write_edge(conn, account, gid, can, why):
+    """Записать право писать и заново решить, остаётся ли группа в рассылке."""
+    record_edge(conn, account, gid, can_write=1 if can else 0)
+    refresh_group_flags(conn, gid, "" if can else (why or "no_send"))
+
+
+def handoff_broadcast(row, name, players, edges):
+    """Кому отдать группу, если name уже не может писать. None — отдать некому."""
+    gid = row["id"]
+    for other in sorted(players):
+        if other == name:
+            continue
+        if gid not in edges.get(other, ()):
+            continue
+        if remaining_cap(players[other]) <= 0:
+            continue
+        return other
+    return None
+
+
 def remember_permanent(conn, kind, key, reason, account=None):
     """Постоянный отказ больше не попадает в очередь."""
     if kind == "dm":
@@ -625,6 +670,7 @@ def dm_eligible_where(repeat_ok=False):
         "(COALESCE(m.username, '') != '' OR m.access_hash IS NOT NULL)",
         "COALESCE(m.dm_block, '')=''",
         "m.user_id NOT IN (SELECT user_id FROM blacklist)",
+        "m.user_id NOT IN (SELECT user_id FROM accounts WHERE user_id IS NOT NULL)",
     ]
     if not repeat_ok:
         parts.append(
@@ -745,7 +791,6 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
     """Общий цикл отправки: журнал sent с авторством аккаунта, FloodWait ->
     cooldown в реестре аккаунтов, рандом-паузы. media: путь к файлу (фото/видео) —
     тогда текст уходит подписью (caption)."""
-    from telethon.errors import FloodWaitError
     cur = conn.execute("INSERT INTO campaigns(kind,text,created_at,account) VALUES(?,?,?,?)",
                        (kind, text, now_iso(), account))
     camp = cur.lastrowid
@@ -753,6 +798,8 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
     done = ok = 0
     halt = False
     halt_reason = ""
+    pause_lo, pause_hi = ordered_pause(
+        getattr(args, "delay_min", 0), getattr(args, "delay_max", 0))
     for target in targets:
         label, peer, key = resolve(target)
         if args.dry_run:
@@ -775,17 +822,19 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
                 ok += 1
                 print(f"  ok  {label}")
                 break
-            except FloodWaitError as e:
-                fu = (datetime.now(timezone.utc) + timedelta(seconds=e.seconds)).isoformat(timespec="seconds")
-                conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, account))
-                conn.commit()
-                print(f"  FloodWait {e.seconds} c на аккаунте «{account}» (cooldown до {fu})")
-                halt = True
-                halt_reason = "FloodWait"
-                break
             except Exception as e:
                 disp = target_disposition(e, kind)
-                if disp in ("halt_dm_queue", "halt_account", "defer_same_account"):
+                if disp == "defer_same_account":
+                    fu = flood_pause_until(e)
+                    conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, account))
+                    conn.commit()
+                    print(f"  {type(e).__name__} {int(getattr(e, 'seconds', 0) or 0)} c "
+                          f"на аккаунте «{account}» (cooldown до {fu}). "
+                          f"Цель не помечена мёртвой.")
+                    halt = True
+                    halt_reason = type(e).__name__
+                    break
+                if disp in ("halt_dm_queue", "halt_account"):
                     fu = spam_pause_until()
                     conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, account))
                     conn.commit()
@@ -805,8 +854,8 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
                 break
         conn.commit()
         done += 1
-        if args.delay_max > 0 and not halt and done < len(targets):
-            await asyncio.sleep(random.uniform(args.delay_min, args.delay_max))
+        if pause_hi > 0 and not halt and done < len(targets):
+            await asyncio.sleep(random.uniform(pause_lo, pause_hi))
     suffix = " [dry-run, ничего не отправлено]" if args.dry_run else ""
     if halt:
         suffix += f" [остановлено: {halt_reason} — аккаунт в cooldown]"
@@ -865,10 +914,11 @@ async def cmd_broadcast(args):
         if not can:
             closed += 1
             if not args.dry_run:
-                record_edge(conn, account, r["id"], can_write=0)
-                refresh_group_flags(conn, r["id"], why)
+                apply_write_edge(conn, account, r["id"], False, why)
             print(f"  пропуск {r['id']} «{r['title']}»: {REASON_RU.get(why, why)}")
             continue
+        if not args.dry_run:
+            apply_write_edge(conn, account, r["id"], True, "")
         open_rows.append(r)
     if not args.dry_run:
         conn.commit()
@@ -908,8 +958,9 @@ async def cmd_dmsend(args):
     rows = [r for r in rows if r["user_id"] != me.id]  # себе не пишем
     if not args.dry_run:
         bud = conn.execute("SELECT daily_budget FROM accounts WHERE name=?", (account,)).fetchone()
-        cap = bud["daily_budget"] if bud else 0
-        if cap:  # 0 = без лимита (не рекомендую)
+        raw = bud["daily_budget"] if bud else None
+        cap = 30 if raw is None else raw  # 0 = без лимита (не рекомендую); NULL = потолок по умолчанию
+        if cap:
             used = today_dm_sent(conn, account)
             left = max(0, cap - used)
             if left == 0:
@@ -1308,17 +1359,17 @@ async def cmd_align(args):
         print("[dry] затем: privacy (единый набор) + probe (права)")
         await client.disconnect()
         return
-    from telethon.errors import (FloodWaitError, UserAlreadyJoinedError,
-                                 UsernameNotPresentError)
+    from telethon.errors import FloodWaitError, UserAlreadyParticipantError
+    from telethon.tl.functions.channels import JoinChannelRequest
     joined = 0
     for r in missing[:args.limit]:
         try:
-            ent = await client.join_chat(r["username"])
+            ent = await client(JoinChannelRequest(r["username"]))
             record_edge(conn, account, ent.id if getattr(ent, "id", None) else r["id"])
             conn.commit()
             joined += 1
             print(f"  + t.me/{r['username']} «{r['title'][:40]}»")
-        except UserAlreadyJoinedError:
+        except UserAlreadyParticipantError:
             record_edge(conn, account, r["id"])
             print(f"  = уже состоит: {r['username']}")
         except FloodWaitError as e:
@@ -1500,6 +1551,7 @@ def cmd_status(args):
         "  WHEN m.user_id IN (SELECT CAST(s.target AS INTEGER) FROM sent s "
         "       JOIN campaigns c ON c.id=s.campaign WHERE c.kind='dm' AND s.status='ok')"
         "       THEN 'already_sent'"
+        "  WHEN m.user_id IN (SELECT user_id FROM accounts WHERE user_id IS NOT NULL) THEN 'self'"
         "  ELSE 'in_queue' END reason FROM members m"
         ") GROUP BY reason ORDER BY c DESC").fetchall()
     shown = False
@@ -1556,40 +1608,71 @@ def cooldown_remaining(p, now_dt=None):
         return 0
 
 
+def remaining_cap(player):
+    if player.get("budget"):
+        return max(0, player["budget"] - player["used"])
+    return 10 ** 9
+
+
+def assign_targets(kind, rows, players, edges=None):
+    """Раскладка без пересечений: эксклюзивные чаты своему аккаунту, общие — у кого больше слотов."""
+    free = {n: p for n, p in players.items() if not cooldown_remaining(p)}
+    caps = {n: remaining_cap(p) for n, p in free.items()}
+    planned = {n: 0 for n in caps}
+    out = []
+
+    def take(candidates):
+        eligible = [n for n in candidates if caps.get(n, 0) > 0]
+        if not eligible:
+            return None
+        who = min(eligible, key=lambda n: (-caps[n], planned[n], n))
+        caps[who] -= 1
+        planned[who] += 1
+        return who
+
+    if kind == "broadcast" and edges is not None:
+        exclusive, shared, nobody = [], [], []
+        for row in rows:
+            cands = [n for n in caps if row["id"] in edges.get(n, ())]
+            if len(cands) == 1:
+                exclusive.append((row, cands))
+            elif len(cands) > 1:
+                shared.append((row, cands))
+            else:
+                nobody.append(row)
+        for row, cands in exclusive + shared:
+            out.append((take(cands), row))
+        for row in nobody:
+            out.append((None, row))
+    else:
+        order = sorted(caps)
+        i = 0
+        for row in rows:
+            who = None
+            for _ in range(max(len(order), 1)):
+                if not order:
+                    break
+                n = order[i % len(order)]
+                i += 1
+                if caps.get(n, 0) > 0:
+                    who = take([n])
+                    break
+            out.append((who, row))
+    return out, sum(1 for who, _ in out if who is None)
+
+
 def preview_assign(kind, rows, players, edges=None, limit_show=30):
     """Сухой план раскладки целей по аккаунтам (для --dry-run и тестов)."""
-    free = {n: p for n, p in players.items() if not cooldown_remaining(p)}
-    out = []
-    caps = {}
-    for n, p in free.items():
-        if p.get("budget"):
-            caps[n] = max(0, p["budget"] - p["used"])
-        else:
-            caps[n] = 10 ** 9
-    order = sorted(free)
-    i = 0
-    for row in rows[:limit_show]:
-        who = None
-        for _ in range(len(order)):
-            n = order[i % len(order)]
-            i += 1
-            if kind == "broadcast" and edges is not None:
-                gid = row["id"]
-                if gid not in edges.get(n, ()):
-                    continue
-            if caps.get(n, 0) > 0:
-                caps[n] -= 1
-                who = n
-                break
-        out.append((who, row))
-    unplanned = sum(1 for w, _ in out if w is None)
-    return out, unplanned
+    plan, unplanned = assign_targets(kind, rows, players, edges)
+    shown = plan if limit_show is None else plan[:limit_show]
+    return shown, unplanned
 
 
 async def cmd_conduct(args):
     """Дирижёр: одна кампания на все включённые аккаунты. Общий организм:
-    единая база целей/журнала/чёрного списка. FloodWait оставляет текущую цель
-    этому аккаунту. PeerFlood на DM останавливает очередь и не отдаёт её другим.
+    единая база целей/журнала/чёрного списка. FloodWait и FloodPremiumWait
+    оставляют текущую цель этому аккаунту. PeerFlood на DM останавливает очередь
+    и не отдаёт её другим.
     Дневные бюджеты считаются на аккаунт; группу отправляет тот, кто может писать."""
     import time as _t
     conn = connect()
@@ -1598,7 +1681,6 @@ async def cmd_conduct(args):
     kind = args.what
     names = args.accounts or [r["name"] for r in conn.execute(
         "SELECT name FROM accounts WHERE enabled=1 ORDER BY name")]
-    from telethon.errors import FloodWaitError
     from telethon.tl.types import Chat, Channel
 
     players = {}
@@ -1615,7 +1697,8 @@ async def cmd_conduct(args):
                 "SELECT daily_budget, broadcast_budget, flood_until FROM accounts WHERE name=?",
                 (n,)).fetchone()
             if kind == "dm":
-                budget = (arow["daily_budget"] or 0) if arow else 0
+                raw = arow["daily_budget"] if arow else None
+                budget = 30 if raw is None else raw
                 used = today_dm_sent(conn, n)
             else:
                 budget = (arow["broadcast_budget"] if arow and arow["broadcast_budget"] is not None
@@ -1636,9 +1719,11 @@ async def cmd_conduct(args):
     if not players:
         sys.exit("Ни один аккаунт не подключён — login --account NAME")
 
-    dmin, dmax = args.delay_min or 0, args.delay_max or 0
-    if not dmax:
+    dmin, dmax = ordered_pause(args.delay_min, args.delay_max)
+    if dmax <= 0:
         dmin, dmax = (20.0, 45.0) if kind == "dm" else (3.0, 8.0)
+    if kind == "dm" and not args.dry_run and dmax < 10:
+        print("! Пауза <10 c между DM — высокий риск бана аккаунта.")
 
     edges = {}
     if kind == "broadcast":
@@ -1647,9 +1732,14 @@ async def cmd_conduct(args):
             dialogs = await p["client"].get_dialogs()
             emaps[n] = {d.entity.id: d.entity for d in dialogs
                         if isinstance(d.entity, (Chat, Channel))}
-            for gid in emaps[n]:
-                record_edge(conn, n, gid)
-            edges[n] = set(emaps[n])
+            writable = set()
+            for gid, ent in emaps[n].items():
+                can, why = classify_broadcast(ent)
+                if can:
+                    writable.add(gid)
+                apply_write_edge(conn, n, gid, can, why)
+            edges[n] = writable
+            print(f"  покрытие «{n}»: диалогов {len(emaps[n])}, можно писать {len(writable)}")
         conn.commit()
         q = "SELECT * FROM groups WHERE active=1 AND in_broadcast=1"
         prm = []
@@ -1657,35 +1747,56 @@ async def cmd_conduct(args):
             q += " AND id IN (%s)" % ",".join("?" * len(args.ids))
             prm = args.ids
         recent = set() if args.repeat_ok else recent_ok_targets(conn, "broadcast", 24)
-        rows = [r for r in conn.execute(q, prm).fetchall() if str(r["id"]) not in recent]
+        fetched = conn.execute(q, prm).fetchall()
+        rows = [r for r in fetched if str(r["id"]) not in recent]
         covered_any = [r for r in rows if any(r["id"] in e for e in edges.values())]
-        print(f"broadcast: групп в работе {len(covered_any)}, без аккаунта-члена "
+        print(f"broadcast: групп в работе {len(covered_any)}, без права писать "
               f"{len(rows) - len(covered_any)}")
         rows = covered_any
+        if args.limit:
+            rows = rows[:args.limit]
         emap_all = emaps
     else:
-        rows = dm_targets(conn, group_id=args.group, repeat_ok=args.repeat_ok,
-                          limit=args.limit if args.limit else None)
+        rows = dm_targets(conn, group_id=args.group, repeat_ok=args.repeat_ok)
         me_ids = {p["me"] for p in players.values()}
         rows = [r for r in rows if r["user_id"] not in me_ids]  # операторам не пишем
         if args.limit:
             rows = rows[:args.limit]
 
+    plan, unplanned = assign_targets(
+        kind, rows, players, edges if kind == "broadcast" else None)
+    by_acc = {}
+    exclusive = {n: 0 for n in players}
+    shared_n = 0
+    for who, row in plan:
+        if who:
+            by_acc[who] = by_acc.get(who, 0) + 1
+        if kind == "broadcast":
+            holders = [n for n in players if row["id"] in edges.get(n, ())]
+            if len(holders) == 1 and who:
+                exclusive[who] += 1
+            elif len(holders) > 1:
+                shared_n += 1
+    print("раскладка: " + ", ".join(f"«{n}» {by_acc.get(n, 0)}" for n in players)
+          + (f", общие чаты {shared_n}" if kind == "broadcast" else "")
+          + f", без слота {unplanned}")
+    if kind == "broadcast":
+        print("  только у этого аккаунта: " +
+              ", ".join(f"«{n}» {exclusive[n]}" for n in players))
+
     if args.dry_run:
-        plan, unplanned = preview_assign(kind, rows, players,
-                                         edges if kind == "broadcast" else None)
         for who, row in plan:
             if kind == "broadcast":
                 print(f"  [dry] {who or 'НИКОМУ'}: группа {row['id']} «{row['title'][:44]}»")
             else:
                 print(f"  [dry] {who or 'НЕТ БЮДЖЕТА'}: @{row['username'] or '-'} id={row['user_id']}")
-        print(f"Сухой план: целей {len(rows)}, показано {len(plan)}, "
-              f"без покрытия/бюджета {unplanned}; аккаунтов {len(players)} — ничего не отправлено")
+        print(f"Сухой план: целей {len(rows)}, без покрытия/бюджета {unplanned}; "
+              f"аккаунтов {len(players)} — ничего не отправлено")
         for p in players.values():
             await p["client"].disconnect()
         return
 
-    if not rows:
+    if not any(who for who, _ in plan):
         for p in players.values():
             await p["client"].disconnect()
         sys.exit("Нет целей (всё отправлено/покрыто/в blacklist/бюджеты)")
@@ -1694,22 +1805,31 @@ async def cmd_conduct(args):
                        (kind, text, now_iso(), "conductor"))
     camp = cur.lastrowid
     conn.commit()
-    pool = collections.deque(rows)
+    queues = {n: collections.deque() for n in players}
+    for who, row in plan:
+        if who:
+            queues[who].append(row)
     deadline = _t.monotonic() + args.window * 3600
     stats = {"ok": 0, "fail": 0}
     stop_dm = asyncio.Event()
     deferred = {}
 
-    def _rotate_away(row, name, rot):
-        pool.append(row)
-        rot += 1
-        if rot > 3 * max(len(pool), 1) + 8:
-            return rot, True
-        return rot, False
+    def _handoff(row, name):
+        """Снять чат с этого аккаунта и отдать тому, кто ещё может писать.
+        Снятие до поиска не даёт двум аккаунтам перекидывать одну группу по кругу."""
+        gid = row["id"]
+        held = edges.get(name)
+        if held is not None:
+            held.discard(gid)
+        other = handoff_broadcast(row, name, players, edges)
+        if not other:
+            return False
+        queues[other].append(row)
+        print(f"  передаю группу {gid} «{row['title'][:40]}» {name} → {other}")
+        return True
 
     async def worker(name):
         p = players[name]
-        rot = 0
         skipped_groups = set()
         while _t.monotonic() < deadline and not stop_dm.is_set():
             rem = cooldown_remaining(p)
@@ -1722,32 +1842,22 @@ async def cmd_conduct(args):
                 return
             row = deferred.pop(name, None)
             if row is None:
-                if not pool or stop_dm.is_set():
+                if stop_dm.is_set() or not queues[name]:
                     return
-                row = pool.popleft()
+                row = queues[name].popleft()
             if kind == "broadcast":
                 gid = row["id"]
                 if gid not in edges.get(name, ()) or gid in skipped_groups:
-                    rot, stuck = _rotate_away(row, name, rot)
-                    if stuck:
-                        return
-                    await asyncio.sleep(0.3)
+                    _handoff(row, name)
                     continue
                 ent = emap_all[name].get(gid)
                 can, why = classify_broadcast(ent)
                 if not can:
                     skipped_groups.add(gid)
-                    record_edge(conn, name, gid, can_write=0)
-                    refresh_group_flags(conn, gid, why)
+                    apply_write_edge(conn, name, gid, False, why)
                     conn.commit()
                     print(f"  пропуск [{name}] группа {gid}: {REASON_RU.get(why, why)}")
-                    still = conn.execute(
-                        "SELECT in_broadcast FROM groups WHERE id=?", (gid,)).fetchone()
-                    if still and still["in_broadcast"]:
-                        rot, stuck = _rotate_away(row, name, rot)
-                        if stuck:
-                            return
-                        await asyncio.sleep(0.3)
+                    _handoff(row, name)
                     continue
                 if slowmode_exceeds(ent, deadline - _t.monotonic()):
                     print(f"  пропуск [{name}] группа {gid}: {REASON_RU['slowmode']}")
@@ -1769,21 +1879,21 @@ async def cmd_conduct(args):
                              "VALUES(?,?,?,?,?)", (camp, key, "ok", now_iso(), name))
                 conn.commit()
                 stats["ok"] += 1
-                rot = 0
                 p["used"] += 1
                 print(f"  ok  [{name}] {label}")
-            except FloodWaitError as e:
-                fu = (datetime.now(timezone.utc) + timedelta(seconds=e.seconds)).isoformat(timespec="seconds")
-                p["flood_until"] = fu
-                deferred[name] = row
-                conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, name))
-                conn.commit()
-                print(f"  ⏸ «{name}»: FloodWait {e.seconds} c (пауза до {fu[11:16]} UTC) — "
-                      f"цель остаётся этому аккаунту")
-                continue
             except Exception as e:
                 disp = target_disposition(e, kind)
-                if disp in ("halt_dm_queue", "halt_account", "defer_same_account"):
+                if disp == "defer_same_account":
+                    fu = flood_pause_until(e)
+                    p["flood_until"] = fu
+                    deferred[name] = row
+                    conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, name))
+                    conn.commit()
+                    seconds = int(getattr(e, "seconds", 0) or 0)
+                    print(f"  ⏸ «{name}»: {type(e).__name__} {seconds} c "
+                          f"(пауза до {fu[11:16]} UTC) — цель остаётся этому аккаунту")
+                    continue
+                if disp in ("halt_dm_queue", "halt_account"):
                     fu = spam_pause_until()
                     p["flood_until"] = fu
                     conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, name))
@@ -1804,16 +1914,18 @@ async def cmd_conduct(args):
                 print(f"  fail [{name}] {label}: {type(e).__name__}: {str(e)[:80]}")
             await asyncio.sleep(random.uniform(dmin, dmax))
 
-    print(f"Кампания #{camp} ({kind}, дирижёр): старт, аккаунтов {len(players)}, целей {len(pool)}")
+    queued = sum(len(q) for q in queues.values())
+    print(f"Кампания #{camp} ({kind}, дирижёр): старт, аккаунтов {len(players)}, целей {queued}")
     await asyncio.gather(*(worker(n) for n in players))
     for p in players.values():
         try:
             await p["client"].disconnect()
         except Exception:
             pass
+    leftover = sum(len(q) for q in queues.values()) + len(deferred)
     print(f"Итог: ok {stats['ok']}, fail {stats['fail']}, "
-          f"не разобрано {len(pool)} (бюджеты/паузы/окно {args.window} ч)")
-    if pool:
+          f"не разобрано {leftover} (бюджеты/паузы/окно {args.window} ч)")
+    if leftover:
         print("  повторите conduct позже — недобратое подхватится по состоянию аккаунтов")
 
 

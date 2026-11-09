@@ -341,6 +341,11 @@ def test_peerflood_is_not_a_target_failure():
     assert bot.target_disposition("PeerFloodError", "broadcast") == "halt_account"
     assert bot.permanent_reason("PeerFloodError", "dm") is None
     assert bot.target_disposition("FloodWaitError", "dm") == "defer_same_account"
+    assert bot.target_disposition("FloodPremiumWaitError", "dm") == "defer_same_account"
+    assert bot.target_disposition("FloodPremiumWaitError", "broadcast") == "defer_same_account"
+    assert bot.permanent_reason("FloodPremiumWaitError", "dm") is None
+    assert bot.ordered_pause(50, 10) == (10.0, 50.0)
+    assert bot.ordered_pause(0, 0) == (0.0, 0.0)
     assert bot.target_disposition("UserPrivacyRestrictedError", "dm") == "remember"
     assert bot.permanent_reason("UserPrivacyRestrictedError", "dm") == "privacy"
     assert bot.target_disposition("ChatRestrictedError", "broadcast") == "remember"
@@ -393,6 +398,50 @@ def test_save_member_stores_address_and_deleted(seeded_db):
     assert bot.save_member(conn, _User(41, "ghost", deleted=True), 101) == 1
     conn.commit()
     assert 41 not in {r["user_id"] for r in bot.dm_targets(conn)}
+
+
+def test_dm_queue_skips_registered_account(seeded_db):
+    """Свой user_id из реестра аккаунтов не входит в общую очередь DM."""
+    conn = seeded_db
+    conn.execute("UPDATE accounts SET user_id=1 WHERE name='main'")
+    conn.commit()
+    ids = {r["user_id"] for r in bot.dm_targets(conn)}
+    assert 1 not in ids, ids
+    free = conn.execute(
+        f"SELECT COUNT(*) c FROM members m WHERE {bot.DM_ELIGIBLE_WHERE}"
+    ).fetchone()["c"]
+    assert free == len(ids)
+
+
+def test_apply_write_edge_restores_group(seeded_db):
+    """Устаревший can_write=0 снимается, когда аккаунт снова может писать."""
+    conn = seeded_db
+    conn.execute("UPDATE groups SET in_broadcast=0, skip_reason='muted' WHERE id=101")
+    conn.execute(
+        "INSERT INTO account_groups(account,group_id,can_write,seen_at) VALUES('main',101,0,?)",
+        (bot.now_iso(),),
+    )
+    conn.commit()
+    bot.apply_write_edge(conn, "main", 101, True, "")
+    row = conn.execute("SELECT in_broadcast, skip_reason FROM groups WHERE id=101").fetchone()
+    assert row["in_broadcast"] == 1 and (row["skip_reason"] or "") == "", dict(row)
+    right = conn.execute(
+        "SELECT can_write FROM account_groups WHERE account='main' AND group_id=101"
+    ).fetchone()
+    assert right["can_write"] == 1
+
+
+class _Flood:
+    def __init__(self, seconds):
+        self.seconds = seconds
+
+
+def test_flood_pause_uses_server_seconds():
+    from datetime import datetime, timedelta, timezone
+    start = datetime.now(timezone.utc)
+    until = bot.flood_pause_until(_Flood(12), now=start)
+    got = datetime.fromisoformat(until)
+    assert got == start + timedelta(seconds=12)
 
 
 if __name__ == "__main__":

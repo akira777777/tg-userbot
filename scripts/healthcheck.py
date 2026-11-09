@@ -1,173 +1,103 @@
-"""healthcheck.py — скрипт для проверки здоровья процессов.
+"""Проверка локальной SQLite-базы tg-userbot.
 
-ИСПРАВЛЕНИЯ (2026-11-08):
-  - await conn.close() заменён на обёртку с try/except.
-  - redis.Redis() и await r.ping() обернуты в try/except.
-  - aiohttp.ClientSession() и session.get() обернуты в try/except.
-  - Добавлены импорты: asyncio, asyncpg.exceptions, redis.exceptions, aiohttp.ClientError.
+Postgres, Redis и FastAPI в этом проекте нет. Скрипт не создаёт базу
+и не ходит в Telegram. Секреты не печатает.
 
-Использует aiohttp для HTTP-запросов и redis-py для проверки Redis.
-Вызывается systemd или cron для мониторинга.
+    .\\.venv\\Scripts\\python.exe scripts\\healthcheck.py
+    .\\.venv\\Scripts\\python.exe scripts\\healthcheck.py --db D:\\copy.db
 """
 
-import asyncio
-import logging
+from __future__ import annotations
+
+import argparse
+import sqlite3
 import sys
-from typing import Optional
+from pathlib import Path
 
-import aiohttp
+ROOT = Path(__file__).resolve().parents[1]
 
-logger = logging.getLogger(__name__)
+REQUIRED_COLUMNS = {
+    "groups": ("id", "in_broadcast", "skip_reason"),
+    "members": ("user_id", "is_bot", "deleted", "access_hash", "dm_block"),
+    "accounts": ("name", "user_id", "daily_budget", "broadcast_budget", "flood_until"),
+    "blacklist": ("user_id",),
+    "campaigns": ("id", "kind"),
+    "sent": ("campaign", "target", "status"),
+}
 
 
-async def check_db(host: str = "localhost", port: int = 5432, user: str = "tg_userbot", password: str = "supersecret", dbname: str = "tg_userbot_db") -> bool:
-    """Проверка подключения к PostgreSQL.
-
-    Исправлено:
-      - await conn.close() заменён на обёртку с try/except.
-      - Добавлена обработка случая, когда asyncpg.connect() не может быть выполнен.
-    """
-    import asyncpg
-
-    try:
-        conn = await asyncpg.connect(
-            host=host,
-            port=port,
-            user=user,
-            password=password,
-            database=dbname,
-            command_timeout=2,
-        )
+def _utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
         try:
-            await conn.close()
+            stream.reconfigure(encoding="utf-8")
         except Exception:
-            # conn.close() может выбрасывать ошибку, если соединение уже закрыто
             pass
-        return True
-    except asyncpg.exceptions.TooManyConnectionsError:
-        logger.error(f"DB check failed: слишком много соединений (asyncpg.exceptions.TooManyConnectionsError)")
-        return False
-    except asyncpg.exceptions.OperationalError as e:
-        logger.error(f"DB check failed: ошибка подключения {e}")
-        return False
-    except asyncpg.exceptions.ConnectionError as e:
-        logger.error(f"DB check failed: ошибка соединения {e}")
-        return False
-    except Exception as e:
-        logger.error(f"DB check failed: {e}")
-        return False
 
 
-async def check_redis(host: str = "localhost", port: int = 6379, db: int = 0) -> bool:
-    """Проверка подключения к Redis.
-
-    Исправлено:
-      - redis.Redis() обёрнут в try/except.
-      - await r.ping() обёрнут в try/except.
-    """
-    import redis
-
-    try:
-        r = redis.Redis(host=host, port=port, db=db, decode_responses=True, socket_timeout=2)
-    except redis.ConnectionError as e:
-        logger.error(f"Redis check failed: ошибка соединения {e}")
-        return False
-    except redis.exceptions.ConnectionError as e:
-        logger.error(f"Redis check failed: ошибка соединения {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Redis check failed: ошибка инициализации {e}")
-        return False
-
-    try:
-        await r.ping()
-    except redis.exceptions.ConnectionError as e:
-        logger.error(f"Redis check failed: ping не прошёл {e}")
-        return False
-    except redis.exceptions.TimeoutError as e:
-        logger.error(f"Redis check failed: ping超时 {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Redis check failed: ошибка ping {e}")
-        return False
-
-    return True
-
-
-async def check_app(url: str = "http://localhost:8000") -> bool:
-    """Проверка здоровья приложения (FastAPI /health).
-
-    Исправлено:
-      - Добавлена обработка случая, когда aiohttp.ClientSession() не может быть создан.
-      - Добавлена обработка случая, когда session.get() не может быть выполнен.
-      - Добавлена обработка случая, когда response.status != 200.
-    """
-    try:
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.get(f"{url}/health", timeout=aiohttp.ClientTimeout(total=5, connect=3)) as response:
-                    if response.status == 200:
-                        logger.info("App healthcheck OK (status 200)")
-                        return True
-                    else:
-                        logger.error(f"App healthcheck failed: status {response.status}")
-                        return False
-            except aiohttp.ClientError as e:
-                logger.error(f"App healthcheck failed: aiohttp.ClientError {e}")
-                return False
-            except asyncio.TimeoutError:
-                logger.error("App healthcheck failed: подключение к /health超时ено")
-                return False
-            except Exception as e:
-                logger.error(f"App healthcheck failed: {e}")
-                return False
-    except Exception as e:
-        logger.error(f"App healthcheck failed: {e}")
-        return False
-
-
-async def main() -> int:
-    """Главная функция — проверка всех сервисов."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
-    logger.info("Starting healthcheck...")
-
-    # Парсим переменные окружения
+def database_path(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
     import os
+    env = os.environ.get("USERBOT_DB")
+    if env:
+        return Path(env).expanduser().resolve()
+    return (ROOT / "userbot.db").resolve()
 
-    db_host = os.getenv("DB_HOST", "localhost")
-    db_port = int(os.getenv("DB_PORT", 5432))
-    db_user = os.getenv("DB_USER", "tg_userbot")
-    db_password = os.getenv("DB_PASSWORD", "supersecret")
-    db_name = os.getenv("DB_NAME", "tg_userbot_db")
-    redis_host = os.getenv("REDIS_HOST", "localhost")
-    redis_port = int(os.getenv("REDIS_PORT", 6379))
-    app_url = os.getenv("APP_URL", "http://localhost:8000")
 
-    # Проверка приложения
-    app_ok = await check_app(app_url)
-    if not app_ok:
-        logger.error("App healthcheck failed")
+def check_sqlite(path: Path) -> list[str]:
+    """Список проблем. Пустой список — база читается и схема на месте."""
+    if not path.exists():
+        return [f"нет файла базы: {path}"]
+    if not path.is_file():
+        return [f"путь базы не файл: {path}"]
+    problems: list[str] = []
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        return [f"база не открывается: {exc}"]
+    try:
+        conn.execute("PRAGMA query_only=ON")
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()
+        if not integrity or integrity[0] != "ok":
+            problems.append(f"integrity_check: {integrity[0] if integrity else 'пусто'}")
+        present = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        for table, columns in REQUIRED_COLUMNS.items():
+            if table not in present:
+                problems.append(f"нет таблицы {table}")
+                continue
+            have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            missing = [col for col in columns if col not in have]
+            if missing:
+                problems.append(
+                    f"{table}: нет колонок {', '.join(missing)} — scripts/db-migrate.py upgrade"
+                )
+    except sqlite3.Error as exc:
+        problems.append(f"ошибка чтения: {exc}")
+    finally:
+        conn.close()
+    return problems
+
+
+def main(argv: list[str] | None = None) -> int:
+    _utf8_stdio()
+    parser = argparse.ArgumentParser(description="Проверка SQLite-базы tg-userbot.")
+    parser.add_argument("--db", help="файл базы; по умолчанию USERBOT_DB или userbot.db")
+    args = parser.parse_args(argv)
+    path = database_path(args.db)
+    problems = check_sqlite(path)
+    if problems:
+        print(f"FAIL {path}", file=sys.stderr)
+        for item in problems:
+            print(f"  {item}", file=sys.stderr)
         return 1
-
-    # Проверка БД
-    db_ok = await check_db(host=db_host, port=db_port, user=db_user, password=db_password, dbname=db_name)
-    if not db_ok:
-        logger.error("DB healthcheck failed")
-        return 1
-
-    # Проверка Redis
-    redis_ok = await check_redis(host=redis_host, port=redis_port, db=0)
-    if not redis_ok:
-        logger.error("Redis healthcheck failed")
-        return 1
-
-    logger.info("All healthchecks passed!")
+    print(f"OK {path}")
     return 0
 
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
-    sys.exit(exit_code)
+    sys.exit(main())

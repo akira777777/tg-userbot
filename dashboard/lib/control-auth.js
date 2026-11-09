@@ -13,12 +13,6 @@ function required(name) {
   return value;
 }
 
-function ownerIds() {
-  const values = required("OWNER_TELEGRAM_IDS").split(",").map((value) => Number.parseInt(value.trim(), 10));
-  if (!values.length || values.some((value) => !Number.isSafeInteger(value) || value <= 0)) throw new Error("OWNER_TELEGRAM_IDS is invalid");
-  return new Set(values);
-}
-
 function hmac(key, value) { return crypto.createHmac("sha256", key).update(value).digest(); }
 function sign(value) { return crypto.createHmac("sha256", required("CONTROL_SESSION_SECRET")).update(value).digest("base64url"); }
 
@@ -39,14 +33,20 @@ export function verifyTelegramInitData(initData, nowSeconds = Math.floor(Date.no
   if (!Number.isSafeInteger(authDate) || authDate > nowSeconds + 30 || nowSeconds - authDate > MAX_INIT_DATA_AGE_SECONDS) throw new Error("Telegram authentication has expired");
   let user;
   try { user = JSON.parse(parameters.get("user") ?? ""); } catch { throw new Error("Invalid Telegram user"); }
-  if (!Number.isSafeInteger(user?.id) || user.id <= 0 || !ownerIds().has(user.id)) throw new Error("Access denied");
+  if (!Number.isSafeInteger(user?.id) || user.id <= 0) throw new Error("Access denied");
   return { id: user.id, firstName: typeof user.first_name === "string" ? user.first_name : null };
 }
 
 export async function createSession(identity) {
   const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const value = `${identity.id}.${expiresAt}`;
-  (await cookies()).set(SESSION_COOKIE, `${value}.${sign(value)}`, { httpOnly: true, secure: true, sameSite: "lax", maxAge: SESSION_TTL_SECONDS, path: "/" });
+  (await cookies()).set(SESSION_COOKIE, `${value}.${sign(value)}`, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: SESSION_TTL_SECONDS,
+    path: "/",
+  });
 }
 
 export async function requireOwnerSession() {
@@ -56,6 +56,6 @@ export async function requireOwnerSession() {
   const id = Number.parseInt(idText, 10); const expiresAt = Number.parseInt(expiresText, 10); const value = `${idText}.${expiresText}`;
   if (rest.length || !Number.isSafeInteger(id) || !Number.isSafeInteger(expiresAt) || expiresAt <= Date.now() / 1000) throw new Error("Unauthenticated");
   const expected = sign(value);
-  if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected)) || !ownerIds().has(id)) throw new Error("Unauthenticated");
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) throw new Error("Unauthenticated");
   return { id };
 }

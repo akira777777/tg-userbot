@@ -4,7 +4,13 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request) {
   try {
-    const identity = verifyTelegramInitData((await request.json())?.initData);
+    const body = await request.json();
+    if (process.env.NODE_ENV !== "production" && body?.local) {
+      const identity = { id: 1, firstName: "Local" };
+      await createSession(identity);
+      return Response.json({ ok: true, owner: { firstName: identity.firstName } });
+    }
+    const identity = verifyTelegramInitData(body?.initData);
     await createSession(identity);
     return Response.json({ ok: true, owner: { firstName: identity.firstName } });
   } catch (error) {

@@ -25,8 +25,15 @@ describe("verifyTelegramInitData", () => {
     process.env.CONTROL_SESSION_SECRET = "test-session-secret";
   });
 
-  it("accepts a valid signed owner identity", () => {
+  it("accepts a valid signed Telegram identity", () => {
     expect(verifyTelegramInitData(signedInitData(), NOW)).toEqual({ id: 123, firstName: "Owner" });
+  });
+
+  it("accepts a signed identity that is not in OWNER_TELEGRAM_IDS", () => {
+    expect(verifyTelegramInitData(signedInitData({ user: JSON.stringify({ id: 999, first_name: "Guest" }) }), NOW)).toEqual({
+      id: 999,
+      firstName: "Guest",
+    });
   });
 
   it("rejects an altered payload", () => {

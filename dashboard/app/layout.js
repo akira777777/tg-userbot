@@ -1,5 +1,4 @@
 import "./globals.css";
-import Script from "next/script";
 
 export const metadata = {
   title: "tg-userbot · мини-ап",
@@ -9,10 +8,10 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="ru">
-      <body>
-        <Script src="https://telegram.org/js/telegram-web-app.js" strategy="beforeInteractive" />
-        {children}
-      </body>
+      <head>
+        <script src="https://telegram.org/js/telegram-web-app.js" />
+      </head>
+      <body>{children}</body>
     </html>
   );
 }
