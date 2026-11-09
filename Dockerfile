@@ -1,99 +1,35 @@
-# tg-userbot — Dockerfile
-# Многоступенчатый образ: slim (развертывание) + dev (разработка)
-# Базовый образ: Python 3.12 slim (минимум, ~500 МБ)
-# Стек: FastAPI, uvicorn, python-telegram-bot, Supabase, Redis
-# Размер образа: ~600 МБ
-
-# ==================== ОСНОВНОЙ ОБРАЗ (slim) ====================
+# tg-userbot runtime image: Telethon CLI + trusted control worker/controller.
 FROM python:3.12-slim-bookworm AS base
 
-# Ставям локали и переменные окружения
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=3 \
-    PIP_DEFAULT_TIMEOUT=10 \
-    POETRY_VERSION=1.8.3 \
-    POETRY_HOME="/opt/poetry" \
-    POETRY_CACHE_DIR="/root/.cache/poetry" \
-    PATH="$POETRY_HOME/bin:$PATH"
+    PIP_NO_CACHE_DIR=1
 
-# Ставим рабочую директорию
 WORKDIR /app
 
-# Ставим базовые зависимости (не изменяются)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libffi-dev \
-    libpq-dev \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+RUN addgroup --system userbot && adduser --system --ingroup userbot userbot
 
-# Ставим poetry (менеджер зависимостей)
-RUN curl -sSL https://install.python-poetry.org | python3 - --version $POETRY_VERSION
+COPY pyproject.toml README.md ./
+COPY bot.py cloud.py web.py ./
+COPY control ./control
+COPY scripts ./scripts
+RUN python -m pip install --upgrade pip && python -m pip install .
 
-# Копируем файлы проекта
-COPY pyproject.toml poetry.lock* ./
-COPY .env.example .env
+RUN mkdir -p /app/data /app/sessions /app/exports && \
+    chown -R userbot:userbot /app
 
-# Ставим зависимости (базовые + dev)
-RUN poetry install --no-interaction --no-root --no-compile --without-hatchling
+USER userbot
+ENV USERBOT_DB=/app/data/userbot.db \
+    SESSION_DIR=/app/sessions
 
-# Копируем исходный код
-COPY --chown=poetry:root ./src ./src
-COPY --chown=poetry:root ./scripts ./scripts
-COPY --chown=poetry:root ./dashboard ./dashboard
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD ["python", "scripts/healthcheck.py", "--db", "/app/data/userbot.db"]
 
-# Ставим приложение
-RUN poetry build
-
-# Экспортируем порт и входим в контейнер
-EXPOSE 8000
-CMD ["poetry", "run", "poetry", "run", "uvicorn", "src.tg_userbot.main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-## ==================== ОБРАЗ ДЛЯ РАЗРАБОТКИ (dev) ====================
 FROM base AS dev
+USER root
+RUN python -m pip install ".[dev]"
+USER userbot
+CMD ["python", "-m", "control.main", "healthcheck"]
 
-# Ставим VS Code Remote
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssh-client \
-    && rm -rf /var/lib/apt/lists/*
-
-# Ставим pre-commit
-RUN pip install pre-commit
-
-# Ставим dev-зависимости
-RUN poetry install --no-interaction --no-root --no-compile
-
-# Ставим редактор и отладчики
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    code \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
-
-# Ставим VS Code Remote SSH (для разработки на macOS)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssh-client \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-CMD ["bash", "-c", "poetry run python src/tg_userbot/main.py"]
-
-## ==================== ОБРАЗ ДЛЯ ПРОДАКШЕНА (prod) ====================
 FROM base AS prod
-
-# Ставим gunicorn
-RUN pip install gunicorn uvicorn
-
-# Копируем исходный код
-COPY --chown=poetry:root ./src ./src
-COPY --chown=poetry:root ./scripts ./scripts
-
-# Ставим приложение
-RUN poetry build
-
-# Ставим порт и входим в контейнер
-EXPOSE 8000
-CMD ["poetry", "run", "gunicorn", "--workers", "4", "--bind", "0.0.0.0:8000", "src.tg_userbot.main:app"]
+CMD ["python", "-m", "control.main", "worker"]
