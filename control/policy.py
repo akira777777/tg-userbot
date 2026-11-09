@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from datetime import UTC, datetime
-from typing import Final
+from typing import Any, Final
 
 from control.config import ControlSettings
 from control.models import (
@@ -18,7 +18,6 @@ from control.models import (
     ConductPayload,
     DmSendPayload,
     TelegramIdentity,
-    ValidatedCommand,
 )
 
 # --- 재사емые константы ---
@@ -81,7 +80,7 @@ class CommandPolicy:
         identity: TelegramIdentity,
         request: CommandPayload,
         now: datetime | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Возвращает {'ok': True, 'validated': {...}} или {'ok': False, 'error': str}."""
         now = now or datetime.now(UTC)
 
@@ -89,12 +88,15 @@ class CommandPolicy:
             return {"ok": False, "error": "недостаточно прав"}
 
         # Проверка kind/mode сочетаний
-        if request.mode == CommandMode.LIVE and request.kind in LIVE_REQUIRES_CONFIRMATION:
-            if not request.confirmation_nonce:
-                return {
-                    "ok": False,
-                    "error": "LIVE режим требует confirmation_nonce",
-                }
+        if (
+            request.mode == CommandMode.LIVE
+            and request.kind in LIVE_REQUIRES_CONFIRMATION
+            and not request.confirmation_nonce
+        ):
+            return {
+                "ok": False,
+                "error": "LIVE режим требует confirmation_nonce",
+            }
 
         # Ограничения по payload
         if request.kind in (CommandKind.BROADCAST, CommandKind.DMSEND, CommandKind.CONDUCT):
@@ -127,9 +129,7 @@ class CommandPolicy:
                 "account": request.account,
                 "payload": request.payload.model_dump(mode="json"),
                 "idempotency_key": str(request.idempotency_key),
-                "confirmation_nonce": (
-                    str(request.confirmation_nonce) if request.confirmation_nonce else None
-                ),
+                "confirmation_nonce": (str(request.confirmation_nonce) if request.confirmation_nonce else None),
                 "forward_privacy": self._forward_privacy,
                 "requested_by": identity.telegram_user_id,
             },
@@ -141,7 +141,7 @@ class CommandPolicy:
     def is_read_only(self, kind: CommandKind) -> bool:
         return kind in READ_ONLY_KINDS
 
-    def safe_summary(self, kind: CommandKind, payload: dict) -> str:
+    def safe_summary(self, kind: CommandKind, payload: dict[str, Any]) -> str:
         """Краткое описание операции без раскрытия user_id получателей."""
         parts: list[str] = [kind.value]
         if isinstance(payload, dict):
@@ -160,17 +160,3 @@ class CommandPolicy:
     @classmethod
     def account_alias(cls, internal_name: str) -> str:
         return Redactor.redact_account_name(internal_name)
-
-
-class ValidatedCommand:
-    """Результат успешной валидации, готовый к enqueue."""
-
-    def __init__(
-        self,
-        identity: TelegramIdentity,
-        request: CommandPayload,
-        validated: dict,
-    ) -> None:
-        self.identity = identity
-        self.request = request
-        self.validated = validated

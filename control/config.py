@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -47,13 +48,14 @@ class ControlSettings:
     session_secret: str = "change-me-in-production"
     session_ttl_minutes: int = 30
 
-    def model_redacted(self) -> dict:
+    def model_redacted(self) -> dict[str, Any]:
+        hidden = "redacted"
         return {
-            "bot_token": "***",
+            "bot_token": hidden,
             "mini_app_url": self.mini_app_url,
             "owner_telegram_ids_count": len(self.owner_telegram_ids),
             "supabase_url": self.supabase_url,
-            "supabase_service_role_key": "***",
+            "supabase_service_role_key": hidden,
             "worker_id": self.worker_id,
             "poll_interval_seconds": self.poll_interval_seconds,
             "lease_seconds": self.lease_seconds,

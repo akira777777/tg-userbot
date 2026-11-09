@@ -13,7 +13,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class AccountAlias:
     internal_name: str  # "main", "work2" — только для бэкенда
-    display_name: str   # "Аккаунт 1", "Аккаунт 2" — для UI
+    display_name: str  # "Аккаунт 1", "Аккаунт 2" — для UI
     is_eligible: bool
 
 

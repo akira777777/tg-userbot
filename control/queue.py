@@ -6,29 +6,71 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
-try:
-    from supabase import Client, create_client
-except ImportError:  # pragma: no cover - supabase опционально на этапе разработки
-    create_client = None  # type: ignore[assignment]
-    Client = object  # type: ignore[misc,valid-type]
-
 from control.config import ControlSettings
-from control.models import CommandRecord, CommandStatus
+from control.models import CommandPayload, CommandRecord, CommandStatus
+
+
+def _connect_supabase(url: str, key: str) -> Any | None:
+    if not url or not key:
+        return None
+    try:
+        import supabase
+    except ImportError:
+        return None
+    factory = getattr(supabase, "create_client", None)
+    if not callable(factory):
+        return None
+    return factory(url, key)
+
+
+def _record_from_row(row: dict[str, Any], *, requested_by: int | None = None) -> CommandRecord:
+    """Rebuild a command from a queue row.
+
+    ``payload`` is the inner operation body. Kind, mode, and account are columns.
+    """
+    stored = row.get("payload") or {}
+    if not isinstance(stored, dict):
+        stored = {}
+    if "payload" in stored and "kind" in stored:
+        request = CommandPayload.model_validate(stored)
+    else:
+        request = CommandPayload.model_validate(
+            {
+                "kind": row["kind"],
+                "mode": row["mode"],
+                "account": row.get("account") or "main",
+                "payload": stored,
+            }
+        )
+    owner = requested_by if requested_by is not None else int(row["owner_telegram_id"])
+    return CommandRecord(
+        id=UUID(str(row["id"])),
+        request=request,
+        requested_by=owner,
+        status=CommandStatus(row["status"]),
+        created_at=row["created_at"],
+        claimed_at=row.get("claimed_at"),
+        finished_at=row.get("finished_at"),
+        lease_expires_at=row.get("lease_expires_at"),
+        result_summary=row.get("result_summary"),
+        error_code=row.get("error_code"),
+        version=int(row.get("version") or 0),
+    )
 
 
 class QueueRepository:
     def __init__(self, settings: ControlSettings) -> None:
         self._settings = settings
-        self._client: Client | None = None
-        if create_client is not None and settings.supabase_url and settings.supabase_service_role_key:
-            self._client = create_client(
-                settings.supabase_url,
-                settings.supabase_service_role_key,
-            )
+        self._client: Any | None = _connect_supabase(
+            settings.supabase_url,
+            settings.supabase_service_role_key,
+        )
 
     def _now(self) -> datetime:
         return datetime.now(UTC)
@@ -39,7 +81,7 @@ class QueueRepository:
         kind: str,
         mode: str,
         account: str,
-        payload: dict,
+        payload: dict[str, Any],
         idempotency_key: UUID,
         confirmation_nonce: UUID | None = None,
     ) -> CommandRecord | None:
@@ -47,7 +89,12 @@ class QueueRepository:
         if self._client is None:
             raise RuntimeError("Supabase client не инициализирован")
 
-        request_digest = self._digest(payload)
+        request_digest = self._digest(
+            {
+                "payload": payload,
+                "confirmation_nonce": None if confirmation_nonce is None else str(confirmation_nonce),
+            }
+        )
         existing = (
             self._client.table("control_commands")
             .select("id,status,kind,mode,account,payload,created_at,version")
@@ -57,15 +104,7 @@ class QueueRepository:
             .execute()
         )
         if existing.data:
-            rec = existing.data
-            return CommandRecord(
-                id=UUID(rec["id"]),
-                request={**rec["payload"], "kind": rec["kind"], "mode": rec["mode"], "account": rec["account"]},
-                requested_by=owner_telegram_id,
-                status=CommandStatus(rec["status"]),
-                created_at=rec["created_at"],
-                version=rec.get("version", 0),
-            )
+            return _record_from_row(existing.data, requested_by=owner_telegram_id)
 
         insert = {
             "id": str(uuid4()),
@@ -91,13 +130,7 @@ class QueueRepository:
             "queued",
             f"команда поставлена в очередь: {kind} ({mode})",
         )
-        return CommandRecord(
-            id=UUID(rec["id"]),
-            request={**rec["payload"], "kind": rec["kind"], "mode": rec["mode"], "account": rec["account"]},
-            requested_by=owner_telegram_id,
-            status=CommandStatus.PENDING,
-            created_at=rec["created_at"],
-        )
+        return _record_from_row(rec, requested_by=owner_telegram_id)
 
     def claim_commands(
         self,
@@ -119,24 +152,7 @@ class QueueRepository:
         ).execute()
 
         rows = rpc.data or []
-        return [
-            CommandRecord(
-                id=UUID(row["id"]),
-                request={
-                    **row["payload"],
-                    "kind": row["kind"],
-                    "mode": row["mode"],
-                    "account": row["account"],
-                },
-                requested_by=row["owner_telegram_id"],
-                status=CommandStatus(row["status"]),
-                created_at=row["created_at"],
-                claimed_at=row.get("claimed_at"),
-                lease_expires_at=row.get("lease_expires_at"),
-                version=row.get("version", 0),
-            )
-            for row in rows
-        ]
+        return [_record_from_row(row) for row in rows]
 
     def renew_lease(
         self,
@@ -162,21 +178,16 @@ class QueueRepository:
             .eq("id", str(command_id))
             .eq("version", version)
             .eq("status", CommandStatus.CLAIMED.value)
-            .select("id,status,version,lease_expires_at")
+            .select(
+                "id,status,kind,mode,account,payload,owner_telegram_id,created_at,"
+                "version,lease_expires_at,claimed_at"
+            )
             .maybe_single()
             .execute()
         )
         if not result.data:
             return None
-        rec = result.data
-        return CommandRecord(
-            id=UUID(rec["id"]),
-            status=CommandStatus(rec["status"]),
-            created_at=rec["created_at"],
-            version=rec.get("version", version + 1),
-            lease_expires_at=rec.get("lease_expires_at"),
-            requested_by=0,  # не нужно для renouvellement
-        )
+        return _record_from_row(result.data)
 
     def complete(
         self,
@@ -223,10 +234,6 @@ class QueueRepository:
         if self._client is None:
             raise RuntimeError("Supabase client не инициализирован")
 
-        filters = [
-            ("id", str(command_id)),
-            ("status", CommandStatus.PENDING.value),
-        ]
         # claimed может отменить только владелец аренды
         query = self._client.table("control_commands").update(
             {"status": CommandStatus.CANCELLED.value, "finished_at": self._now().isoformat()}
@@ -263,26 +270,7 @@ class QueueRepository:
             .execute()
         )
         rows = result.data or []
-        return [
-            CommandRecord(
-                id=UUID(row["id"]),
-                request={
-                    **row["payload"],
-                    "kind": row["kind"],
-                    "mode": row["mode"],
-                    "account": row["account"],
-                },
-                requested_by=row["owner_telegram_id"],
-                status=CommandStatus(row["status"]),
-                created_at=row["created_at"],
-                claimed_at=row.get("claimed_at"),
-                finished_at=row.get("finished_at"),
-                result_summary=row.get("result_summary"),
-                error_code=row.get("error_code"),
-                version=row.get("version", 0),
-            )
-            for row in rows
-        ]
+        return [_record_from_row(row) for row in rows]
 
     def get_command(self, command_id: UUID, owner_telegram_id: int) -> CommandRecord | None:
         if self._client is None:
@@ -298,25 +286,7 @@ class QueueRepository:
         )
         if not result.data:
             return None
-        row = result.data
-        return CommandRecord(
-            id=UUID(row["id"]),
-            request={
-                **row["payload"],
-                "kind": row["kind"],
-                "mode": row["mode"],
-                "account": row["account"],
-            },
-            requested_by=row["owner_telegram_id"],
-            status=CommandStatus(row["status"]),
-            created_at=row["created_at"],
-            claimed_at=row.get("claimed_at"),
-            finished_at=row.get("finished_at"),
-            lease_expires_at=row.get("lease_expires_at"),
-            result_summary=row.get("result_summary"),
-            error_code=row.get("error_code"),
-            version=row.get("version", 0),
-        )
+        return _record_from_row(result.data)
 
     def append_event(
         self,
@@ -340,9 +310,10 @@ class QueueRepository:
                     "safe_message": safe_message[:512],
                 }
             ).execute()
-            return True
         except Exception:
             return False
+        else:
+            return True
 
     def _append_event(
         self,
@@ -354,7 +325,6 @@ class QueueRepository:
     ) -> None:
         self.append_event(command_id, sequence, level, event_type, safe_message)
 
-    def _digest(self, payload: dict) -> str:
-        import hashlib
-
-        return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    def _digest(self, payload: dict[str, Any]) -> str:
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
