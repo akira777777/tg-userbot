@@ -38,11 +38,13 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS groups(
   id INTEGER PRIMARY KEY,
   title TEXT, username TEXT, gtype TEXT,
-  added_at TEXT, active INTEGER DEFAULT 1, in_broadcast INTEGER DEFAULT 1
+  added_at TEXT, active INTEGER DEFAULT 1, in_broadcast INTEGER DEFAULT 1,
+  skip_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS members(
   user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT,
-  is_bot INTEGER DEFAULT 0, collected_at TEXT, source_group INTEGER
+  is_bot INTEGER DEFAULT 0, collected_at TEXT, source_group INTEGER,
+  deleted INTEGER DEFAULT 0, access_hash INTEGER, dm_block TEXT
 );
 CREATE TABLE IF NOT EXISTS member_sources(
   user_id INTEGER, group_id INTEGER, PRIMARY KEY(user_id, group_id)
@@ -60,6 +62,7 @@ CREATE TABLE IF NOT EXISTS blacklist(
 CREATE TABLE IF NOT EXISTS accounts(
   name TEXT PRIMARY KEY, session TEXT, user_id INTEGER, api_id TEXT, api_hash TEXT,
   enabled INTEGER DEFAULT 1, daily_budget INTEGER DEFAULT 30,
+  broadcast_budget INTEGER DEFAULT 15,
   flood_until TEXT, note TEXT, added_at TEXT
 );
 CREATE TABLE IF NOT EXISTS account_groups(
@@ -109,6 +112,12 @@ def connect():
     return conn
 
 
+def _add_column(conn, table, column, ddl):
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
 def migrate(conn):
     """Идемпотентно: колонка account у кампаний/отправок + сид главного аккаунта."""
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
@@ -117,31 +126,81 @@ def migrate(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(sent)")}
     if "account" not in cols:
         conn.execute("ALTER TABLE sent ADD COLUMN account TEXT DEFAULT 'main'")
+    _add_column(conn, "groups", "skip_reason", "TEXT")
+    _add_column(conn, "members", "deleted", "INTEGER DEFAULT 0")
+    _add_column(conn, "members", "access_hash", "INTEGER")
+    _add_column(conn, "members", "dm_block", "TEXT")
+    _add_column(conn, "accounts", "broadcast_budget", "INTEGER DEFAULT 15")
     conn.execute("INSERT OR IGNORE INTO accounts(name,session,added_at) VALUES('main',?,?)",
                  (LEGACY_SESSION, now_iso()))
     conn.commit()
 
 
-def record_edge(conn, account, gid):
-    """Покрытие: аккаунт состоит в группе. can_write НЕ трогаем —
-    его выставляет только groups --probe (sync/conduct не сбрасывают права)."""
-    conn.execute("INSERT INTO account_groups(account,group_id,can_write,seen_at) "
-                 "VALUES(?,?,1,?) ON CONFLICT(account,group_id) DO UPDATE SET seen_at=excluded.seen_at",
-                 (account, gid, now_iso()))
+def record_edge(conn, account, gid, can_write=None):
+    """Покрытие: аккаунт состоит в группе.
+
+    can_write=None не затирает права (их выставляет probe или явная классификация).
+    """
+    if can_write is None:
+        conn.execute("INSERT INTO account_groups(account,group_id,can_write,seen_at) "
+                     "VALUES(?,?,1,?) ON CONFLICT(account,group_id) DO UPDATE SET seen_at=excluded.seen_at",
+                     (account, gid, now_iso()))
+        return
+    conn.execute(
+        "INSERT INTO account_groups(account,group_id,can_write,seen_at) "
+        "VALUES(?,?,?,?) ON CONFLICT(account,group_id) DO UPDATE SET "
+        "seen_at=excluded.seen_at, can_write=excluded.can_write",
+        (account, gid, int(can_write), now_iso()))
+
+
+def refresh_group_flags(conn, gid, reason):
+    """Группа в рассылке, если хоть один аккаунт может в неё писать."""
+    row = conn.execute(
+        "SELECT MAX(can_write) c FROM account_groups WHERE group_id=?", (gid,)).fetchone()
+    if row and row["c"]:
+        conn.execute("UPDATE groups SET in_broadcast=1, skip_reason='' WHERE id=?", (gid,))
+        return
+    conn.execute(
+        "UPDATE groups SET in_broadcast=0, skip_reason=? WHERE id=?",
+        (reason or "no_send", gid))
 
 
 def flood_guard(conn, account):
     row = conn.execute("SELECT flood_until FROM accounts WHERE name=?", (account,)).fetchone()
     if row and row["flood_until"] and row["flood_until"] > now_iso():
-        sys.exit(f"Аккаунт «{account}» в cooldown до {row['flood_until']} (FloodWait) — "
-                 f"подожди или раздай работу другому аккаунту")
+        sys.exit(f"Аккаунт «{account}» в cooldown до {row['flood_until']} — "
+                 f"подожди окончания паузы; ту же очередь другому аккаунту не передавай")
+
+
+def today_sent(conn, account, kind):
+    return conn.execute(
+        "SELECT COUNT(*) c FROM sent s JOIN campaigns c ON c.id=s.campaign "
+        "WHERE s.account=? AND s.status='ok' AND c.kind=? AND s.ts>=?",
+        (account, kind, now_iso()[:10] + "T00:00:00")).fetchone()["c"]
 
 
 def today_dm_sent(conn, account):
-    return conn.execute(
-        "SELECT COUNT(*) c FROM sent s JOIN campaigns c ON c.id=s.campaign "
-        "WHERE s.account=? AND s.status='ok' AND c.kind='dm' AND s.ts>=?",
-        (account, now_iso()[:10] + "T00:00:00")).fetchone()["c"]
+    return today_sent(conn, account, "dm")
+
+
+def today_broadcast_sent(conn, account):
+    return today_sent(conn, account, "broadcast")
+
+
+def trim_to_cap(rows, cap, used):
+    """Обрезать выборку дневным потолком. cap=0 — без лимита, left=None."""
+    if not cap:
+        return list(rows), None
+    left = max(0, int(cap) - int(used))
+    return list(rows)[:left], left
+
+
+def daily_cap(conn, account, kind):
+    col = "daily_budget" if kind == "dm" else "broadcast_budget"
+    bud = conn.execute(f"SELECT {col} AS c FROM accounts WHERE name=?", (account,)).fetchone()
+    if not bud or bud["c"] is None:
+        return 30 if kind == "dm" else 15
+    return bud["c"]
 
 
 def get_client(account="main", allow_flood=False):
@@ -230,6 +289,27 @@ async def cmd_login(args):
     print(f"ОК, аккаунт «{args.account}»: {name} @{me.username or '-'} (id={me.id}), session={path}")
 
 
+def upsert_mailing_group(conn, account, ent):
+    """Запомнить чат. Недостижимый не остаётся в рассылке, если писать некому."""
+    can, why = classify_broadcast(ent)
+    gtype = ("channel" if getattr(ent, "broadcast", False) else
+             "megagroup" if getattr(ent, "megagroup", False) else "group")
+    gid = ent.id
+    title = getattr(ent, "title", "") or ""
+    username = getattr(ent, "username", None) or ""
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO groups(id,title,username,gtype,added_at,in_broadcast,skip_reason) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (gid, title, username, gtype, now_iso(), 1 if can else 0, "" if can else why))
+    added = cur.rowcount
+    conn.execute(
+        "UPDATE groups SET title=?, username=?, gtype=? WHERE id=?",
+        (title, username, gtype, gid))
+    record_edge(conn, account, gid, can_write=1 if can else 0)
+    refresh_group_flags(conn, gid, why)
+    return added, can, why
+
+
 async def cmd_groups(args):
     conn = connect()
     if args.list:
@@ -240,6 +320,8 @@ async def cmd_groups(args):
             "SELECT group_id, MAX(can_write) cw FROM account_groups GROUP BY group_id")}
         for r in rows:
             flag = "в рассылке" if r["in_broadcast"] else "пауза"
+            if r["skip_reason"]:
+                flag += " · " + REASON_RU.get(r["skip_reason"], r["skip_reason"])
             cw = cov.get(r["id"])
             if cw is not None:
                 flag += " · писать: " + ("✓" if cw else "✗ нет прав ни у кого")
@@ -269,17 +351,11 @@ async def cmd_groups(args):
     async for d in client.iter_dialogs():
         ent = d.entity
         if isinstance(ent, (Chat, Channel)):
-            gtype = "channel" if getattr(ent, "broadcast", False) else \
-                    "megagroup" if getattr(ent, "megagroup", False) else "group"
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO groups(id,title,username,gtype,added_at) "
-                "VALUES(?,?,?,?,?)",
-                (ent.id, getattr(ent, "title", ""), getattr(ent, "username", None) or "",
-                 gtype, now_iso()))
-            record_edge(conn, args.account, ent.id)
-            if cur.rowcount:
+            n, can, why = upsert_mailing_group(conn, args.account, ent)
+            if n:
                 added += 1
-                print(f"  + {ent.id} {ent.title}")
+                mark = "" if can else f" (не цель: {REASON_RU.get(why, why)})"
+                print(f"  + {ent.id} {ent.title}{mark}")
     conn.commit()
     total = conn.execute("SELECT COUNT(*) c FROM groups").fetchone()["c"]
     print(f"Добавлено новых групп: {added} (всего в списке: {total})")
@@ -311,16 +387,16 @@ async def cmd_watch(args):
             return
         chat = await e.get_chat()
         if isinstance(chat, (Chat, Channel)):
-            if not conn.execute("SELECT 1 FROM groups WHERE id=?", (chat.id,)).fetchone():
-                conn.execute("INSERT INTO groups(id,title,username,gtype,added_at) VALUES(?,?,?,?,?)",
-                             (chat.id, chat.title, getattr(chat, "username", None) or "",
-                              "channel" if getattr(chat, "broadcast", False) else
-                              "megagroup" if getattr(chat, "megagroup", False) else "group",
-                              now_iso()))
-                conn.commit()
-                record_edge(conn, args.account, chat.id)
-                conn.commit()
-                print(f"[авто+] группа {chat.id} «{chat.title}» добавлена в рассылку (аккаунт «{args.account}»)")
+            fresh = not conn.execute("SELECT 1 FROM groups WHERE id=?", (chat.id,)).fetchone()
+            added, can, why = upsert_mailing_group(conn, args.account, chat)
+            conn.commit()
+            if fresh:
+                note = "" if can else f", не цель: {REASON_RU.get(why, why)}"
+                print(f"[авто+] группа {chat.id} «{chat.title}» "
+                      f"(аккаунт «{args.account}»){note}")
+            elif added:
+                print(f"[авто+] группа {chat.id} «{chat.title}» добавлена "
+                      f"(аккаунт «{args.account}»)")
 
     client.add_event_handler(on_msg, events.NewMessage())
     print("watch запущен: новые группы добавляются автоматически, «стоп» в DM -> blacklist. Ctrl+C — выход.")
@@ -336,11 +412,218 @@ def member_is_bot(u):
     return int(bool(getattr(u, "bot", False)) or username_is_bot(getattr(u, "username", None)))
 
 
+def _field(row, key, default=None):
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        if key not in row or row[key] is None:
+            return default
+        return row[key]
+    try:
+        keys = row.keys()
+    except AttributeError:
+        keys = None
+    if keys is not None and key not in keys:
+        return default
+    try:
+        val = row[key]
+    except (KeyError, IndexError):
+        return default
+    if val is None:
+        return default
+    return val
+
+
+def _admin_can_post(entity):
+    if getattr(entity, "creator", False):
+        return True
+    rights = getattr(entity, "admin_rights", None)
+    if not rights:
+        return False
+    return bool(getattr(rights, "post_messages", False))
+
+
+def classify_broadcast(entity):
+    """Можно ли этому аккаунту писать в чат. (ok, reason). reason пустой, если можно.
+
+    Канал — цель только у создателя или админа с post_messages.
+    Обычный чат закрыт, если аккаунт вышел, заглушён лично или сообщения запрещены всем.
+    """
+    if entity is None:
+        return False, "not_member"
+    if getattr(entity, "left", False):
+        return False, "left"
+    if getattr(entity, "kicked", False):
+        return False, "kicked"
+    banned = getattr(entity, "banned_rights", None)
+    if banned and getattr(banned, "send_messages", False):
+        return False, "muted"
+    if getattr(entity, "broadcast", False):
+        if _admin_can_post(entity):
+            return True, ""
+        return False, "channel_subscriber"
+    default_rights = getattr(entity, "default_banned_rights", None)
+    if (default_rights and getattr(default_rights, "send_messages", False)
+            and not _admin_can_post(entity)):
+        return False, "no_send"
+    return True, ""
+
+
+def classify_dm(row, self_id=None, blacklisted=False, already_sent=False):
+    """Можно ли ставить строку members в очередь DM. (ok, reason)."""
+    if row is None:
+        return False, "no_address"
+    username = _field(row, "username", "") or ""
+    if int(_field(row, "is_bot", 0) or 0) or username_is_bot(username):
+        return False, "bot"
+    if blacklisted:
+        return False, "blacklist"
+    uid = _field(row, "user_id", None)
+    if self_id is not None and uid == self_id:
+        return False, "self"
+    if int(_field(row, "deleted", 0) or 0):
+        return False, "deleted"
+    if already_sent:
+        return False, "already_sent"
+    block = str(_field(row, "dm_block", "") or "").strip()
+    if block:
+        return False, block
+    if not str(username).strip() and _field(row, "access_hash", None) is None:
+        return False, "no_address"
+    return True, ""
+
+
+def slowmode_exceeds(entity, remaining_seconds):
+    """True, если slowmode длиннее оставшегося окна кампании. Без окна не отсекаем."""
+    if entity is None or remaining_seconds is None:
+        return False
+    seconds = int(getattr(entity, "slowmode_seconds", 0) or 0)
+    return seconds > max(0, remaining_seconds)
+
+
+SPAM_ERRORS = {"PeerFloodError", "UserRestrictedError"}
+
+PERMANENT_DM = {
+    "UserPrivacyRestrictedError": "privacy",
+    "UserIsBlockedError": "user_blocked",
+    "YouBlockedUserError": "you_blocked",
+    "InputUserDeactivatedError": "deleted",
+    "UserDeactivatedError": "deleted",
+    "UserDeactivatedBanError": "deleted",
+    "PeerIdInvalidError": "no_address",
+    "UsernameNotOccupiedError": "no_address",
+    "UsernameInvalidError": "no_address",
+    "UserIdInvalidError": "no_address",
+}
+
+PERMANENT_BROADCAST = {
+    "ChatWriteForbiddenError": "no_send",
+    "ChatAdminRequiredError": "no_send",
+    "UserBannedInChannelError": "muted",
+    "ChannelPrivateError": "not_member",
+    "ChatRestrictedError": "restricted",
+    "TopicClosedError": "topic_closed",
+    "UserNotParticipantError": "not_member",
+    "ChatGuestSendForbiddenError": "no_send",
+}
+
+REASON_RU = {
+    "channel_subscriber": "канал: подписчик, постить нельзя",
+    "left": "выход из чата",
+    "kicked": "исключён из чата",
+    "muted": "личный запрет писать",
+    "no_send": "чат закрыл сообщения",
+    "not_member": "аккаунт не состоит",
+    "restricted": "чат ограничен",
+    "topic_closed": "тема закрыта",
+    "bot": "бот",
+    "deleted": "удалённый аккаунт",
+    "no_address": "нет ника и access_hash",
+    "privacy": "приватность: личка закрыта",
+    "user_blocked": "получатель заблокировал",
+    "you_blocked": "мы заблокировали получателя",
+    "blacklist": "чёрный список",
+    "already_sent": "уже писали",
+    "self": "свой аккаунт",
+    "slowmode": "slowmode длиннее окна кампании",
+}
+
+
+def _error_name(exc):
+    return exc if isinstance(exc, str) else type(exc).__name__
+
+
+def send_error_class(exc):
+    """flood | slowmode | spam | other. PeerFlood — spam, не обычный fail цели."""
+    name = _error_name(exc)
+    if name == "FloodWaitError":
+        return "flood"
+    if name == "SlowModeWaitError":
+        return "slowmode"
+    if name in SPAM_ERRORS:
+        return "spam"
+    return "other"
+
+
+def permanent_reason(exc, kind):
+    name = _error_name(exc)
+    table = PERMANENT_DM if kind == "dm" else PERMANENT_BROADCAST
+    return table.get(name)
+
+
+def target_disposition(exc, kind):
+    """Что делать с целью после ошибки отправки.
+
+    defer_same_account — FloodWait, цель остаётся этому аккаунту.
+    halt_dm_queue — PeerFlood на DM: очередь другим аккаунтам не отдаётся.
+    halt_account — спам-сигнал на broadcast: молчит только этот аккаунт.
+    remember — постоянный отказ цели.
+    skip — slowmode, без пометки цели мёртвой.
+    fail — прочая ошибка, попытка записана, очередь идёт дальше.
+    """
+    name = _error_name(exc)
+    klass = send_error_class(name)
+    if klass == "flood":
+        return "defer_same_account"
+    if klass == "spam":
+        return "halt_dm_queue" if kind == "dm" else "halt_account"
+    if klass == "slowmode":
+        return "skip"
+    if permanent_reason(name, kind):
+        return "remember"
+    return "fail"
+
+
+def spam_pause_until(now=None):
+    now = now or datetime.now(timezone.utc)
+    return (now + timedelta(hours=24)).isoformat(timespec="seconds")
+
+
+def remember_permanent(conn, kind, key, reason, account=None):
+    """Постоянный отказ больше не попадает в очередь."""
+    if kind == "dm":
+        conn.execute(
+            "UPDATE members SET dm_block=? WHERE user_id=? AND COALESCE(dm_block, '')=''",
+            (reason, int(key)))
+        if reason == "deleted":
+            conn.execute("UPDATE members SET deleted=1 WHERE user_id=?", (int(key),))
+        return
+    gid = int(key)
+    if account:
+        conn.execute(
+            "UPDATE account_groups SET can_write=0, seen_at=? WHERE account=? AND group_id=?",
+            (now_iso(), account, gid))
+    refresh_group_flags(conn, gid, reason)
+
+
 def dm_eligible_where(repeat_ok=False):
     """Предикат очереди новых DM. repeat_ok снимает только дедуп прошлых успешных DM."""
     parts = [
         "m.is_bot=0",
         "LOWER(COALESCE(m.username, '')) NOT LIKE '%bot'",
+        "COALESCE(m.deleted, 0)=0",
+        "(COALESCE(m.username, '') != '' OR m.access_hash IS NOT NULL)",
+        "COALESCE(m.dm_block, '')=''",
         "m.user_id NOT IN (SELECT user_id FROM blacklist)",
     ]
     if not repeat_ok:
@@ -358,14 +641,26 @@ DM_ELIGIBLE_WHERE = dm_eligible_where(False)
 def save_member(conn, u, gid):
     uname = u.username or ""
     is_bot = member_is_bot(u)
+    deleted = int(bool(getattr(u, "deleted", False)))
+    access_hash = getattr(u, "access_hash", None)
     cur = conn.execute(
-        "INSERT OR IGNORE INTO members(user_id,username,first_name,last_name,is_bot,collected_at,source_group) "
-        "VALUES(?,?,?,?,?,?,?)",
-        (u.id, uname, u.first_name or "", u.last_name or "", is_bot, now_iso(), gid))
+        "INSERT OR IGNORE INTO members(user_id,username,first_name,last_name,is_bot,collected_at,"
+        "source_group,deleted,access_hash) VALUES(?,?,?,?,?,?,?,?,?)",
+        (u.id, uname, u.first_name or "", u.last_name or "", is_bot, now_iso(), gid,
+         deleted, access_hash))
     # INSERT OR IGNORE не обновляет уже существующую строку — иначе ник *bot
     # навсегда остаётся is_bot=0, если первый scrape записал его человеком.
+    sets, params = [], []
     if is_bot:
-        conn.execute("UPDATE members SET is_bot=1 WHERE user_id=? AND is_bot=0", (u.id,))
+        sets.append("is_bot=1")
+    if deleted:
+        sets.append("deleted=1")
+    if access_hash is not None:
+        sets.append("access_hash=?")
+        params.append(int(access_hash))
+    if sets:
+        params.append(u.id)
+        conn.execute(f"UPDATE members SET {', '.join(sets)} WHERE user_id=?", params)
     conn.execute("INSERT OR IGNORE INTO member_sources(user_id,group_id) VALUES(?,?)", (u.id, gid))
     return cur.rowcount
 
@@ -392,7 +687,7 @@ async def cmd_scrape(args):
         n = 0
         while True:
             try:
-                async for u in client.iter_participants(ent, aggressive=True):
+                async for u in client.iter_participants(ent):
                     n += save_member(conn, u, gid)
                 break
             except FloodWaitError as e:
@@ -421,9 +716,9 @@ async def cmd_scrape(args):
 
 
 def dm_targets(conn, group_id=None, repeat_ok=False, limit=None):
-    """Очередь DM: боты (флаг и ник *bot), blacklist и получатели прошлых DM исключены.
+    """Очередь DM: боты, удалённые, без адреса, dm_block, blacklist и прошлые DM исключены.
 
-    Пустые профили (нет ника и имени) остаются в очереди: это не боты.
+    Пустой профиль с username или access_hash остаётся: его можно адресовать.
     Имена людей, внутри которых есть буквы bot (Subbotina, Rabota), не отсекаются.
     """
     q = f"SELECT m.* FROM members m WHERE {dm_eligible_where(repeat_ok)}"
@@ -457,6 +752,7 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
     conn.commit()
     done = ok = 0
     halt = False
+    halt_reason = ""
     for target in targets:
         label, peer, key = resolve(target)
         if args.dry_run:
@@ -484,12 +780,27 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
                 conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, account))
                 conn.commit()
                 print(f"  FloodWait {e.seconds} c на аккаунте «{account}» (cooldown до {fu})")
-                halt = True  # флуд аккаунта — вся кампания бессмысленна, стоп
+                halt = True
+                halt_reason = "FloodWait"
                 break
             except Exception as e:
+                disp = target_disposition(e, kind)
+                if disp in ("halt_dm_queue", "halt_account", "defer_same_account"):
+                    fu = spam_pause_until()
+                    conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, account))
+                    conn.commit()
+                    print(f"  {type(e).__name__}: аккаунт «{account}» на паузе до {fu}. "
+                          f"Цель не помечена мёртвой и другому аккаунту не отдаётся.")
+                    halt = True
+                    halt_reason = type(e).__name__
+                    break
+                status = f"fail:{type(e).__name__}"
+                if disp == "skip":
+                    status = "skip:slowmode"
+                elif disp == "remember":
+                    remember_permanent(conn, kind, key, permanent_reason(e, kind), account)
                 conn.execute("INSERT OR REPLACE INTO sent(campaign,target,status,ts,account) "
-                             "VALUES(?,?,?,?,?)",
-                             (camp, key, f"fail:{type(e).__name__}", now_iso(), account))
+                             "VALUES(?,?,?,?,?)", (camp, key, status, now_iso(), account))
                 print(f"  fail {label}: {type(e).__name__}: {str(e)[:120]}")
                 break
         conn.commit()
@@ -498,7 +809,7 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
             await asyncio.sleep(random.uniform(args.delay_min, args.delay_max))
     suffix = " [dry-run, ничего не отправлено]" if args.dry_run else ""
     if halt:
-        suffix += " [остановлено из-за FloodWait — аккаунт в cooldown]"
+        suffix += f" [остановлено: {halt_reason} — аккаунт в cooldown]"
     print(f"Кампания #{camp} ({kind}, «{account}»): отправлено {ok}, попыток {done}{suffix}")
     return camp
 
@@ -546,6 +857,35 @@ async def cmd_broadcast(args):
         if dup:
             print(f"  пропущено {len(dup)} групп: туда уже писали <24 ч назад "
                   f"(любым аккаунтом; --repeat-ok отключает)")
+    open_rows = []
+    closed = 0
+    for r in rows:
+        ent = emap.get(r["id"])
+        can, why = classify_broadcast(ent)
+        if not can:
+            closed += 1
+            if not args.dry_run:
+                record_edge(conn, account, r["id"], can_write=0)
+                refresh_group_flags(conn, r["id"], why)
+            print(f"  пропуск {r['id']} «{r['title']}»: {REASON_RU.get(why, why)}")
+            continue
+        open_rows.append(r)
+    if not args.dry_run:
+        conn.commit()
+    if closed:
+        print(f"  не цель для «{account}»: {closed}")
+    rows = open_rows
+    if not args.dry_run:
+        cap = daily_cap(conn, account, "broadcast")
+        used = today_broadcast_sent(conn, account)
+        trimmed, left = trim_to_cap(rows, cap, used)
+        if left == 0:
+            sys.exit(f"Дневной потолок групп «{account}» исчерпан ({used}/{cap}). "
+                     f"Завтра продолжится сам; объём = accounts bbudget {account} N.")
+        if left is not None and len(trimmed) < len(rows):
+            print(f"потолок групп «{account}»: обрезаю выборку {len(rows)} -> {left} "
+                  f"(сегодня ok {used}/{cap})")
+        rows = trimmed
     if not rows:
         sys.exit("Нечего отправлять: список пуст или всё уже покрыто")
     print(f"Рассылка {len(rows)} групп(ы) аккаунтом «{account}»"
@@ -574,14 +914,14 @@ async def cmd_dmsend(args):
             left = max(0, cap - used)
             if left == 0:
                 sys.exit(f"Дневной DM-бюджет «{account}» исчерпан ({used}/{cap}). "
-                         f"Завтра продолжится сам; объём = accounts budget {account} N, "
-                         f"или подключи второй аккаунт (login --account work2).")
+                         f"Завтра продолжится сам; объём = accounts budget {account} N.")
             if len(rows) > left:
                 print(f"бюджет «{account}»: обрезаю выборку {len(rows)} -> {left} "
                       f"(сегодня ok {used}/{cap})")
                 rows = rows[:left]
     if not rows:
-        sys.exit("Нет доступных получателей (все отправлены/в blacklist/боты).")
+        sys.exit("Нет доступных получателей (отправлены, в blacklist, боты, "
+                 "удалённые или без адреса).")
     print(f"DM {len(rows)} получателям аккаунтом «{account}» (лимит за-run: {args.limit}):")
     await send_run(client, conn, "dm", rows, text, args,
                    resolve=lambda r: (f"@{r['username'] or '-'} id={r['user_id']}",
@@ -595,6 +935,8 @@ def cmd_accounts(args):
     if op == "list":
         for a in conn.execute("SELECT * FROM accounts ORDER BY name"):
             used = today_dm_sent(conn, a["name"])
+            bused = today_broadcast_sent(conn, a["name"])
+            bcap = a["broadcast_budget"]
             flags = []
             if not a["enabled"]:
                 flags.append("ВЫКЛ")
@@ -602,6 +944,7 @@ def cmd_accounts(args):
                 flags.append(f"cooldown до {a['flood_until'][11:16]} UTC")
             print(f"  {a['name']:<14} id={a['user_id'] or '-':<12} "
                   f"DM сегодня {used:>3}/{a['daily_budget'] or '∞'}  "
+                  f"группы {bused:>3}/{bcap if bcap else '∞'}  "
                   f"session={a['session']}  {' '.join(flags)}")
         return
     if op == "import":
@@ -646,6 +989,11 @@ def cmd_accounts(args):
         if not (0 <= n <= 500):
             sys.exit("budget: 0 (без лимита, не рекомендую) .. 500")
         conn.execute("UPDATE accounts SET daily_budget=? WHERE name=?", (n, name))
+    elif op == "bbudget":
+        n = int(args.value)
+        if not (0 <= n <= 500):
+            sys.exit("bbudget: 0 (без лимита, не рекомендую) .. 500")
+        conn.execute("UPDATE accounts SET broadcast_budget=? WHERE name=?", (n, name))
     elif op == "remove":
         if name == "main":
             sys.exit("main не удаляю — отключи: accounts disable main")
@@ -743,33 +1091,24 @@ async def probe_apply(client, account, conn, keep=True, verbose=True):
     ok_cnt = bad_cnt = 0
     for r in rows:
         ent = emap.get(r["id"])
-        if ent is None:
-            can, why = False, "аккаунт не состоит (после sync других — перепроверь)"
-        elif getattr(ent, "left", False):
-            can, why = False, "выход из чата (left)"
-        elif getattr(ent, "broadcast", False):
-            admin = getattr(ent, "admin_rights", None) or getattr(ent, "creator", False)
-            can = bool(admin)
-            why = "канал: админ ✓" if can else "канал: подписчик — постинг закрыт"
-        else:
-            dbr = getattr(ent, "default_banned_rights", None)
-            # ChatBannedRights: флаг True = право ЗАПРЕЩЕНО для всех по умолчанию
-            blocked = bool(dbr and getattr(dbr, "send_messages", False))
-            can = not blocked
-            why = "чат: писать нельзя (ограничение для всех)" if blocked else "чат: открыт"
+        can, why = classify_broadcast(ent)
         if can:
             ok_cnt += 1
-            if not keep:
-                conn.execute("UPDATE groups SET active=1 WHERE id=?", (r["id"],))
         else:
             bad_cnt += 1
-            if not keep:
-                conn.execute("UPDATE groups SET in_broadcast=0 WHERE id=?", (r["id"],))
-        if ent is not None:
-            conn.execute("INSERT OR REPLACE INTO account_groups(account,group_id,can_write,seen_at)"
-                         " VALUES(?,?,?,?)", (account, r["id"], int(can), now_iso()))
+        if ent is None:
+            conn.execute(
+                "UPDATE account_groups SET can_write=0, seen_at=? WHERE account=? AND group_id=?",
+                (now_iso(), account, r["id"]))
+        else:
+            record_edge(conn, account, r["id"], can_write=1 if can else 0)
+        if not keep:
+            if can:
+                conn.execute("UPDATE groups SET active=1 WHERE id=?", (r["id"],))
+            refresh_group_flags(conn, r["id"], why)
         if verbose:
-            print(f"  {'✓' if can else '✗'} {r['id']:<15} {(r['title'] or '')[:46]:<48} {why}")
+            label = "можно писать" if can else REASON_RU.get(why, why)
+            print(f"  {'✓' if can else '✗'} {r['id']:<15} {(r['title'] or '')[:46]:<48} {label}")
     conn.commit()
     return ok_cnt, bad_cnt
 
@@ -1113,13 +1452,17 @@ def cmd_status(args):
     print(f"  участников собрано: {c('members')}  (ботов: "
           f"{conn.execute('SELECT COUNT(*) c FROM members WHERE is_bot=1').fetchone()['c']})")
     print(f"  в blacklist: {c('blacklist')}")
-    for a in conn.execute("SELECT name,enabled,user_id,daily_budget,flood_until "
-                          "FROM accounts ORDER BY name"):
+    for a in conn.execute(
+            "SELECT name,enabled,user_id,daily_budget,broadcast_budget,flood_until "
+            "FROM accounts ORDER BY name"):
         used = today_dm_sent(conn, a["name"])
+        bused = today_broadcast_sent(conn, a["name"])
         mark = "" if a["enabled"] else " [ВЫКЛ]"
         fl = " [cooldown]" if a["flood_until"] and a["flood_until"] > now_iso() else ""
+        bcap = a["broadcast_budget"] if a["broadcast_budget"] else "∞"
         print(f"  аккаунт «{a['name']}»: id={a['user_id'] or '?'} "
-              f"DM сегодня {used}/{a['daily_budget'] or '∞'}{mark}{fl}")
+              f"DM сегодня {used}/{a['daily_budget'] or '∞'}  "
+              f"группы {bused}/{bcap}{mark}{fl}")
     print(f"  кампаний: {c('campaigns')}")
     print("  последние отправки:")
     for s in conn.execute("SELECT s.campaign,c.kind,s.target,s.status,s.ts FROM sent s "
@@ -1129,6 +1472,36 @@ def cmd_status(args):
     free = conn.execute(
         f"SELECT COUNT(*) c FROM members m WHERE {DM_ELIGIBLE_WHERE}").fetchone()["c"]
     print(f"  доступных для новых DM: {free}")
+    print("  группы вне рассылки:")
+    outside = conn.execute(
+        "SELECT COALESCE(NULLIF(skip_reason, ''), '(без причины)') reason, COUNT(*) c "
+        "FROM groups WHERE COALESCE(in_broadcast, 0)=0 GROUP BY 1 ORDER BY c DESC").fetchall()
+    if not outside:
+        print("    нет")
+    for r in outside:
+        print(f"    {r['c']:>5}  {REASON_RU.get(r['reason'], r['reason'])}")
+    print("  участники вне очереди DM:")
+    buckets = conn.execute(
+        "SELECT reason, COUNT(*) c FROM ("
+        " SELECT CASE"
+        "  WHEN m.is_bot=1 OR LOWER(COALESCE(m.username, '')) LIKE '%bot' THEN 'bot'"
+        "  WHEN COALESCE(m.deleted, 0)=1 THEN 'deleted'"
+        "  WHEN COALESCE(m.dm_block, '')!='' THEN m.dm_block"
+        "  WHEN COALESCE(m.username, '')='' AND m.access_hash IS NULL THEN 'no_address'"
+        "  WHEN m.user_id IN (SELECT user_id FROM blacklist) THEN 'blacklist'"
+        "  WHEN m.user_id IN (SELECT CAST(s.target AS INTEGER) FROM sent s "
+        "       JOIN campaigns c ON c.id=s.campaign WHERE c.kind='dm' AND s.status='ok')"
+        "       THEN 'already_sent'"
+        "  ELSE 'in_queue' END reason FROM members m"
+        ") GROUP BY reason ORDER BY c DESC").fetchall()
+    shown = False
+    for r in buckets:
+        if r["reason"] == "in_queue":
+            continue
+        shown = True
+        print(f"    {r['c']:>5}  {REASON_RU.get(r['reason'], r['reason'])}")
+    if not shown:
+        print("    нет")
 
 
 def cmd_blacklist(args):
@@ -1179,8 +1552,12 @@ def preview_assign(kind, rows, players, edges=None, limit_show=30):
     """Сухой план раскладки целей по аккаунтам (для --dry-run и тестов)."""
     free = {n: p for n, p in players.items() if not cooldown_remaining(p)}
     out = []
-    caps = {n: (max(0, (p["budget"] - p["used"])) if (kind == "dm" and p["budget"])
-               else 10 ** 9) for n, p in free.items()}
+    caps = {}
+    for n, p in free.items():
+        if p.get("budget"):
+            caps[n] = max(0, p["budget"] - p["used"])
+        else:
+            caps[n] = 10 ** 9
     order = sorted(free)
     i = 0
     for row in rows[:limit_show]:
@@ -1203,9 +1580,9 @@ def preview_assign(kind, rows, players, edges=None, limit_show=30):
 
 async def cmd_conduct(args):
     """Дирижёр: одна кампания на все включённые аккаунты. Общий организм:
-    единая база целей/журнала/чёрного списка; если аккаунт ушёл на cooldown
-    (FloodWait) — цель немедленно подхватывает другой; дневные DM-бюджеты
-    считаются на аккаунт; группы отправляются тем аккаунтом, который в них состоит."""
+    единая база целей/журнала/чёрного списка; FloodWait и PeerFlood оставляют
+    цель на том же аккаунте и не передают DM-очередь другим; дневные бюджеты
+    считаются на аккаунт; группы отправляются тем аккаунтом, который может писать."""
     import time as _t
     conn = connect()
     media = resolve_media(conn, getattr(args, "media", None))
@@ -1226,17 +1603,23 @@ async def cmd_conduct(args):
                 continue
             me = await c.get_me()
             conn.execute("UPDATE accounts SET user_id=? WHERE name=?", (me.id, n))
-            arow = conn.execute("SELECT daily_budget,flood_until FROM accounts WHERE name=?",
-                                (n,)).fetchone()
-            players[n] = {"client": c, "me": me.id,
-                          "budget": (arow["daily_budget"] or 0) if arow else 0,
-                          "used": today_dm_sent(conn, n) if kind == "dm" else 0,
+            arow = conn.execute(
+                "SELECT daily_budget, broadcast_budget, flood_until FROM accounts WHERE name=?",
+                (n,)).fetchone()
+            if kind == "dm":
+                budget = (arow["daily_budget"] or 0) if arow else 0
+                used = today_dm_sent(conn, n)
+            else:
+                budget = (arow["broadcast_budget"] if arow and arow["broadcast_budget"] is not None
+                          else 15)
+                used = today_broadcast_sent(conn, n)
+            players[n] = {"client": c, "me": me.id, "budget": budget, "used": used,
                           "flood_until": arow["flood_until"] if arow else None}
             rem = cooldown_remaining(players[n])
+            cap_label = players[n]["budget"] or "∞"
             print(f"  игрок «{n}» (id={me.id}): "
                   + (f"пауза ещё {rem} c" if rem else "готов")
-                  + (f", DM сегодня {players[n]['used']}/{players[n]['budget']}"
-                     if kind == 'dm' and players[n]['budget'] else ""))
+                  + f", {kind} сегодня {players[n]['used']}/{cap_label}")
         except SystemExit as e:
             print(f"  пропуск «{n}»: {e}")
         except Exception as e:
@@ -1306,27 +1689,60 @@ async def cmd_conduct(args):
     pool = collections.deque(rows)
     deadline = _t.monotonic() + args.window * 3600
     stats = {"ok": 0, "fail": 0}
+    stop_dm = asyncio.Event()
+    deferred = {}
+
+    def _rotate_away(row, name, rot):
+        pool.append(row)
+        rot += 1
+        if rot > 3 * max(len(pool), 1) + 8:
+            return rot, True
+        return rot, False
 
     async def worker(name):
         p = players[name]
         rot = 0
-        while pool and _t.monotonic() < deadline:
+        skipped_groups = set()
+        while _t.monotonic() < deadline and not stop_dm.is_set():
             rem = cooldown_remaining(p)
             if rem:
-                await asyncio.sleep(min(rem + 1, 120))
+                await asyncio.sleep(min(rem + 1, 30))
                 continue
-            if kind == "dm" and p["budget"] and p["used"] >= p["budget"]:
-                print(f"  «{name}»: дневной бюджет DM исчерпан ({p['used']}/{p['budget']}) — отдыхает до завтра")
+            if p["budget"] and p["used"] >= p["budget"]:
+                print(f"  «{name}»: дневной потолок {kind} исчерпан "
+                      f"({p['used']}/{p['budget']}) — отдыхает до завтра")
                 return
-            row = pool.popleft()
+            row = deferred.pop(name, None)
+            if row is None:
+                if not pool or stop_dm.is_set():
+                    return
+                row = pool.popleft()
             if kind == "broadcast":
                 gid = row["id"]
-                if gid not in edges.get(name, ()):
-                    pool.append(row)
-                    rot += 1
-                    if rot > 3 * len(pool) + 8:
-                        return  # для этого аккаунта тут делать нечего
+                if gid not in edges.get(name, ()) or gid in skipped_groups:
+                    rot, stuck = _rotate_away(row, name, rot)
+                    if stuck:
+                        return
                     await asyncio.sleep(0.3)
+                    continue
+                ent = emap_all[name].get(gid)
+                can, why = classify_broadcast(ent)
+                if not can:
+                    skipped_groups.add(gid)
+                    record_edge(conn, name, gid, can_write=0)
+                    refresh_group_flags(conn, gid, why)
+                    conn.commit()
+                    print(f"  пропуск [{name}] группа {gid}: {REASON_RU.get(why, why)}")
+                    still = conn.execute(
+                        "SELECT in_broadcast FROM groups WHERE id=?", (gid,)).fetchone()
+                    if still and still["in_broadcast"]:
+                        rot, stuck = _rotate_away(row, name, rot)
+                        if stuck:
+                            return
+                        await asyncio.sleep(0.3)
+                    continue
+                if slowmode_exceeds(ent, deadline - _t.monotonic()):
+                    print(f"  пропуск [{name}] группа {gid}: {REASON_RU['slowmode']}")
                     continue
                 peer = pick_target(emap_all[name], row)
                 key = str(gid)
@@ -1346,23 +1762,37 @@ async def cmd_conduct(args):
                 conn.commit()
                 stats["ok"] += 1
                 rot = 0
-                if kind == "dm":
-                    p["used"] += 1
+                p["used"] += 1
                 print(f"  ok  [{name}] {label}")
             except FloodWaitError as e:
                 fu = (datetime.now(timezone.utc) + timedelta(seconds=e.seconds)).isoformat(timespec="seconds")
                 p["flood_until"] = fu
+                deferred[name] = row
                 conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, name))
                 conn.commit()
-                pool.appendleft(row)  # цель подхватит другой аккаунт
-                print(f"  ⏸ «{name}»: FloodWait {e.seconds} c (пауза до {fu[11:16]} UTC) — цель передана")
+                print(f"  ⏸ «{name}»: FloodWait {e.seconds} c (пауза до {fu[11:16]} UTC) — "
+                      f"цель остаётся этому аккаунту")
                 continue
             except Exception as e:
+                disp = target_disposition(e, kind)
+                if disp in ("halt_dm_queue", "halt_account", "defer_same_account"):
+                    fu = spam_pause_until()
+                    p["flood_until"] = fu
+                    conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, name))
+                    conn.commit()
+                    print(f"  ⏸ «{name}»: {type(e).__name__} — пауза до {fu[11:16]} UTC, "
+                          f"очередь другим не передаётся")
+                    if disp == "halt_dm_queue":
+                        stop_dm.set()
+                    return
+                status = "skip:slowmode" if disp == "skip" else f"fail:{type(e).__name__}"
+                if disp == "remember":
+                    remember_permanent(conn, kind, key, permanent_reason(e, kind), name)
+                if disp != "skip":
+                    stats["fail"] += 1
                 conn.execute("INSERT OR REPLACE INTO sent(campaign,target,status,ts,account) "
-                             "VALUES(?,?,?,?,?)",
-                             (camp, key, f"fail:{type(e).__name__}", now_iso(), name))
+                             "VALUES(?,?,?,?,?)", (camp, key, status, now_iso(), name))
                 conn.commit()
-                stats["fail"] += 1
                 print(f"  fail [{name}] {label}: {type(e).__name__}: {str(e)[:80]}")
             await asyncio.sleep(random.uniform(dmin, dmax))
 
@@ -1475,7 +1905,7 @@ def build_parser():
 
     p = sub.add_parser("accounts", parents=[ap],
                        help="реестр аккаунтов оркестра")
-    p.add_argument("op", choices=["list", "enable", "disable", "budget", "import", "remove", "secret"])
+    p.add_argument("op", choices=["list", "enable", "disable", "budget", "bbudget", "import", "remove", "secret"])
     p.add_argument("name", nargs="?", default="")
     p.add_argument("value", nargs="?", default="")
     p.add_argument("--purge", action="store_true", help="remove: удалить и session-файлы")
@@ -1483,7 +1913,7 @@ def build_parser():
 
     p = sub.add_parser("conduct",
                        help="дирижёр: одна кампания на все аккаунты — "
-                            "failover при FloodWait, бюджеты, покрытие групп")
+                            "пауза остаётся на том же аккаунте, бюджеты, покрытие групп")
     p.add_argument("--what", choices=["dm", "broadcast"], required=True)
     p.add_argument("--text"); p.add_argument("--file")
     p.add_argument("--media", type=int, help="id медиа из библиотеки — уйдёт подписью")
