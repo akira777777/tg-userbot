@@ -943,6 +943,11 @@ async def cmd_broadcast(args):
         if not args.dry_run:
             apply_write_edge(conn, account, r["id"], True, "")
         open_rows.append(r)
+    # #region agent log
+    _agent_dbg("B", "bot.py:cmd_broadcast", "broadcast classify finished",
+               {"dry_run": bool(args.dry_run), "closed": closed, "open": len(open_rows),
+                "will_commit_edges": not bool(args.dry_run)})
+    # #endregion
     if not args.dry_run:
         conn.commit()
     if closed:
@@ -978,7 +983,14 @@ async def cmd_dmsend(args):
     await require_auth(client)
     rows = dm_targets(conn, group_id=args.group, repeat_ok=args.repeat_ok, limit=args.limit)
     me = await client.get_me()
+    before_self = len(rows)
     rows = [r for r in rows if r["user_id"] != me.id]  # себе не пишем
+    # #region agent log
+    _agent_dbg("D", "bot.py:cmd_dmsend", "dm queue after self filter",
+               {"dry_run": bool(args.dry_run), "limit": args.limit,
+                "before_self": before_self, "after_self": len(rows),
+                "dropped_self": before_self - len(rows)})
+    # #endregion
     if not args.dry_run:
         bud = conn.execute("SELECT daily_budget FROM accounts WHERE name=?", (account,)).fetchone()
         raw = bud["daily_budget"] if bud else None
@@ -1756,18 +1768,28 @@ async def cmd_conduct(args):
             emaps[n] = {d.entity.id: d.entity for d in dialogs
                         if isinstance(d.entity, (Chat, Channel))}
             writable = set()
+            dry_cover = dry_block = 0
             for gid, ent in emaps[n].items():
                 can, why = classify_broadcast(ent)
                 if can:
                     writable.add(gid)
                     if args.dry_run:
+                        dry_cover += 1
                         # Сухой прогон не возвращает чат в рассылку. Новую строку
                         # покрытия запоминаем, уже записанный can_write=0 не затираем.
                         record_edge(conn, n, gid)
                     else:
                         apply_write_edge(conn, n, gid, True, "")
                 else:
+                    if args.dry_run:
+                        dry_block += 1
                     apply_write_edge(conn, n, gid, False, why)
+            # #region agent log
+            _agent_dbg("C", "bot.py:cmd_conduct", "conduct coverage pass",
+                       {"dry_run": bool(args.dry_run), "dialogs": len(emaps[n]),
+                        "writable": len(writable), "dry_cover_touch": dry_cover,
+                        "dry_block_write": dry_block})
+            # #endregion
             edges[n] = writable
             print(f"  покрытие «{n}»: диалогов {len(emaps[n])}, можно писать {len(writable)}")
         conn.commit()
