@@ -1,186 +1,123 @@
-"""db-migrate.py — управление миграциями БД.
+"""Схема SQLite tg-userbot.
 
-ИСПРАВЛЕНИЯ (2026-11-08):
-  - Убрана настройка alembic_cfg.set() (ошибка API).
-  - Добавлена нормализация пути alembic.ini через Path.resolve().
-  - Добавлена проверка существования alembic.ini.
-  - Добавлена обработка ошибки инициализации alembic.
+Alembic и Postgres здесь нет. Колонки добавляет bot.migrate() при открытии
+базы. Откат не поддерживается: старые колонки не удаляются.
 
-Использование:
-    python scripts/db-migrate.py init       — инициализация alembic
-    python scripts/db-migrate.py upgrade    — миграция вверх
-    python scripts/db-migrate.py downgrade  — миграция вниз
-    python scripts/db-migrate.py current    — текущая версия
-    python scripts/db-migrate.py stamp      — установка версии вручную
-    python scripts/db-migrate.py history    — история миграций
+    .\\.venv\\Scripts\\python.exe scripts\\db-migrate.py current
+    .\\.venv\\Scripts\\python.exe scripts\\db-migrate.py upgrade
+    .\\.venv\\Scripts\\python.exe scripts\\db-migrate.py upgrade --db D:\\copy.db
 """
 
+from __future__ import annotations
+
 import argparse
+import os
+import sqlite3
 import sys
-from datetime import datetime
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-# Импорт alembic
-import alembic.command
-import alembic.config
+HISTORY = (
+    "campaigns.account, sent.account",
+    "groups.skip_reason",
+    "members.deleted, members.access_hash, members.dm_block",
+    "accounts.broadcast_budget",
+    "сид аккаунта main, если его ещё нет",
+)
 
 
-# Конфигурация alembic — путь к alembic.ini нормализуется автоматически при инициализации.
-# Не используем alembic_cfg.set() — это вызывало ошибку.
-# alembic_cfg = alembic.config.Config("alembic.ini")
-alembic_cfg = alembic.config.Config("alembic.ini")
+def _utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 
-def init_database(database_url: str = "postgresql://tg_userbot:***@db:5432/tg_userbot_db") -> None:
-    """Инициализация alembic для существующей БД.
+def database_path(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    env = os.environ.get("USERBOT_DB")
+    if env:
+        return Path(env).expanduser().resolve()
+    return (ROOT / "userbot.db").resolve()
 
-    Исправлено:
-      - Убрана настройка alembic_cfg.set() (ошибка API).
-      - Добавлена проверка существования alembic.ini.
-      - Добавлена обработка ошибки инициализации alembic.
-    """
-    print("Initializing Alembic...")
 
-    # Путь к alembic.ini — alembic создаёт его автоматически в migrations/alembic.ini
-    # alembic.command.init создаёт alembic.ini рядом с migrations/
-    # Проверяем, существует ли alembic.ini
-    alembic_ini_path = Path("./migrations/alembic.ini")
-
-    if not alembic_ini_path.exists():
-        print(f"  ⚠️  alembic.ini не найден в {alembic_ini_path.resolve()}")
-        print(f"  ℹ️  Запустите сначала: python scripts/db-migrate.py init")
-        return
-
+def read_tables(path: Path) -> list[str]:
+    if not path.exists():
+        raise SystemExit(f"нет базы: {path}. Создайте её командой upgrade.")
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
-        alembic.command.init(
-            alembic_cfg,
-            "migrations",
-            setup_logging=False,
-            renderable=False,
-            script_location="./migrations",
-        )
-        print("✅ Alembic initialized.")
-    except Exception as e:
-        print(f"  ❌ Ошибка инициализации alembic: {e}", file=sys.stderr)
-        raise
+        conn.execute("PRAGMA query_only=ON")
+        return [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY 1"
+            )
+        ]
+    finally:
+        conn.close()
 
 
-def upgrade_database(
-    revision: str | None = None,
-    sql: bool = False,
-    schema: str | None = None,
-) -> None:
-    """Миграция вверх (upgrade)."""
-    print(f"Upgrading database (revision={revision}, sql={sql}, schema={schema})...")
-    alembic.command.upgrade(
-        alembic_cfg,
-        revision=revision,
-        sql=sql,
-        schema=schema,
-        renderable=False,
-    )
-    print("✅ Upgrade complete.")
+def upgrade(path: Path) -> int:
+    os.environ["USERBOT_DB"] = str(path)
+    import bot
 
-
-def downgrade_database(revision: str | None = None, sql: bool = False, schema: str | None = None) -> None:
-    """Миграция вниз (downgrade)."""
-    print(f"Downgrading database (revision={revision}, sql={sql}, schema={schema})...")
-    alembic.command.downgrade(
-        alembic_cfg,
-        revision=revision,
-        sql=sql,
-        schema=schema,
-        renderable=False,
-    )
-    print("✅ Downgrade complete.")
-
-
-def show_current() -> None:
-    """Показывает текущую версию БД."""
-    version = alembic.command.current(alembic_cfg)
-    print(f"Current version: {version}")
-
-
-def show_history() -> None:
-    """История миграций."""
-    history = alembic.command.history(alembic_cfg)
-    print(f"{'Revision':<20}{'Label':<15}{'Down rev'}{'Description'}")
-    print("-" * 60)
-    for revision, label, down_rev, desc in history:
-        print(f"{revision:<20}{label:<15}{down_rev:<10}{desc}")
-
-
-def stamp_version(version: str, metadata: str | None = None) -> None:
-    """Установка версии вручную."""
-    print(f"Stamping version: {version} (metadata={metadata})")
-    alembic.command.stamp(
-        alembic_cfg,
-        revision=version,
-        metadata=metadata,
-        script_location="./migrations",
-    )
-    print("✅ Version stamped.")
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Управление миграциями БД.")
-    subparsers = parser.add_subparsers(dest="command", help="Команда")
-
-    # init
-    parser_init = subparsers.add_parser("init", help="Инициализация alembic")
-    parser_init.add_argument("--database", default="postgresql://tg_userbot:supersecret@db:5432/tg_userbot_db")
-
-    # upgrade
-    parser_upgrade = subparsers.add_parser("upgrade", help="Миграция вверх")
-    parser_upgrade.add_argument("--revision", default="head", help="Целевая версия")
-    parser_upgrade.add_argument("--sql", action="store_true", help="SQL-версия миграции")
-    parser_upgrade.add_argument("--schema", help="Схема миграции")
-
-    # downgrade
-    parser_downgrade = subparsers.add_parser("downgrade", help="Миграция вниз")
-    parser_downgrade.add_argument("--revision", default="-1", help="Целевая версия")
-    parser_downgrade.add_argument("--sql", action="store_true", help="SQL-версия миграции")
-    parser_downgrade.add_argument("--schema", help="Схема миграции")
-
-    # current
-    subparsers.add_parser("current", help="Текущая версия БД")
-
-    # history
-    subparsers.add_parser("history", help="История миграций")
-
-    # stamp
-    parser_stamp = subparsers.add_parser("stamp", help="Установка версии вручную")
-    parser_stamp.add_argument("version", help="Версия для установки")
-    parser_stamp.add_argument("--metadata", help="Метаданные версии")
-
-    args = parser.parse_args()
-
-    if args.command == "init":
-        init_database(database=args.database)
-    elif args.command == "upgrade":
-        upgrade_database(
-            revision=args.revision,
-            sql=args.sql,
-            schema=args.schema,
-        )
-    elif args.command == "downgrade":
-        downgrade_database(
-            revision=args.revision,
-            sql=args.sql,
-            schema=args.schema,
-        )
-    elif args.command == "current":
-        show_current()
-    elif args.command == "history":
-        show_history()
-    elif args.command == "stamp":
-        stamp_version(version=args.version, metadata=args.metadata)
-    else:
-        parser.print_help()
-        return 1
-
+    bot.DB_PATH = path
+    conn = bot.connect()
+    try:
+        tables = [
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY 1"
+            )
+        ]
+    finally:
+        conn.close()
+    print(f"SQLite {path}")
+    print("таблицы: " + ", ".join(tables))
+    print("схема актуальна (bot.migrate)")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    _utf8_stdio()
+    parser = argparse.ArgumentParser(description="Схема SQLite tg-userbot (без Alembic).")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--db", help="файл базы; по умолчанию USERBOT_DB или userbot.db")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("init", parents=[common], help="то же, что upgrade: схема создаётся в bot.py")
+    sub.add_parser("upgrade", parents=[common], help="создать базу и добавить недостающие колонки")
+    sub.add_parser("current", parents=[common], help="показать таблицы, ничего не записывая")
+    sub.add_parser("history", parents=[common], help="какие добавления делает bot.migrate")
+    down = sub.add_parser("downgrade", parents=[common], help="не поддерживается")
+    down.add_argument("--revision", nargs="?", default="-1")
+    stamp = sub.add_parser("stamp", parents=[common], help="не поддерживается")
+    stamp.add_argument("version", nargs="?", default="")
+
+    args = parser.parse_args(argv)
+    path = database_path(args.db)
+    if args.command in ("init", "upgrade"):
+        return upgrade(path)
+    if args.command == "current":
+        tables = read_tables(path)
+        print(f"SQLite {path}")
+        print("таблицы: " + ", ".join(tables))
+        return 0
+    if args.command == "history":
+        print("Миграции только добавляют колонки, код — bot.migrate():")
+        for item in HISTORY:
+            print(f"  {item}")
+        return 0
+    print(
+        "Откат не поддерживается: bot.migrate только добавляет колонки и не удаляет данные.",
+        file=sys.stderr,
+    )
+    return 2
 
 
 if __name__ == "__main__":

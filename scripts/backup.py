@@ -1,216 +1,153 @@
-"""backup.py — скрипт для создания бэкапов БД и Redis.
+"""Копия SQLite-базы и каталога медиа.
 
-ИСПРАВЛЕНИЯ (2026-11-08):
-  - Добавлена нормализация пути BACKUP_DIR через Path.resolve().
-  - Добавлена обработка случая, когда BACKUP_DIR не может быть создан.
-  - Добавлена обработка случая, когда pg_dump/redis-cli не установлены.
-  - Добавлена обработка случая, когда subprocess.run() завершается с кодом ≠ 0.
-  - Добавлена проверка существования pg_dump и redis-cli.
-  - Добавлена обработка случая, когда tarfile.open() не может быть выполнен.
-  - Добавлена обработка случая, когда Path(backup_file).unlink() не может быть выполнен.
+Сессии Telegram и .env скрипт не копирует. Postgres и Redis здесь нет:
+база — один файл SQLite, копия снимается через API backup (безопасно при WAL).
 
-Использование:
-    python scripts/backup.py --db --redis --media
-
-Опциональные аргументы:
-    --db       — бэкап БД (PostgreSQL)
-    --redis    — бэкап Redis (RDB + AOF)
-    --media    — бэкап медиа-файлов
-    --compress — сжатие бэкапа (tar.gz)
+    .\\.venv\\Scripts\\python.exe scripts\\backup.py --db
+    .\\.venv\\Scripts\\python.exe scripts\\backup.py --db --media --gzip
+    .\\.venv\\Scripts\\python.exe scripts\\backup.py --rotate --keep 14
 """
 
+from __future__ import annotations
+
 import argparse
-import tarfile
-import subprocess
+import gzip
+import os
+import re
+import shutil
+import sqlite3
 import sys
-import time
+import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+
+ROOT = Path(__file__).resolve().parents[1]
+BACKUP_NAME = re.compile(r"^(db_\d{8}_\d{6}\.db(\.gz)?|media_\d{8}_\d{6}\.zip)$")
 
 
-# Путь к бэкапам — нормализуем путь через resolve()
-BACKUP_DIR = Path("./backups").resolve()
+def _utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 
-def create_db_backup(db_name: str = "tg_userbot_db", host: str = "localhost", port: int = 5432, user: str = "tg_userbot", password: str = "supersecret") -> str:
-    """Создание бэкапа PostgreSQL с помощью pg_dump.
+def database_path(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    env = os.environ.get("USERBOT_DB")
+    if env:
+        return Path(env).expanduser().resolve()
+    return (ROOT / "userbot.db").resolve()
 
-    Исправлено:
-      - Добавлена нормализация пути BACKUP_DIR через Path.resolve().
-      - Добавлена обработка случая, когда BACKUP_DIR не может быть создан.
-      - Добавлена проверка существования pg_dump.
-      - Добавлена обработка случая, когда pg_dump не установлен или не может быть выполнен.
-      - Добавлена обработка случая, когда subprocess.run() завершается с кодом ≠ 0.
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_file = BACKUP_DIR / f"db_{timestamp}.sql"
 
-    # Создаём директорию бэкапов
+def media_path(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    env = os.environ.get("USERBOT_MEDIA")
+    if env:
+        return Path(env).expanduser().resolve()
+    return (ROOT / "media_cache").resolve()
+
+
+def backup_sqlite(src: Path, dest: Path) -> None:
+    if not src.exists():
+        raise SystemExit(f"нет базы: {src}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src_conn = sqlite3.connect(src)
+    dst_conn = sqlite3.connect(dest)
     try:
-        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        print(f"  ❌ Не удалось создать BACKUP_DIR={BACKUP_DIR}: {e}", file=sys.stderr)
-        raise
-
-    print(f"Creating DB backup: {backup_file}")
-
-    # Проверяем, установлен ли pg_dump
-    try:
-        subprocess.run(["pg_dump", "--version"], check=True, capture_output=True, text=True, timeout=5)
-    except FileNotFoundError:
-        print(f"  ❌ pg_dump не найден. Установите PostgreSQL: https://www.postgresql.org/download/", file=sys.stderr)
-        raise SystemExit(1)
-    except subprocess.CalledProcessError:
-        print(f"  ❌ pg_dump не работает. Проверьте, установлен ли PostgreSQL.", file=sys.stderr)
-        raise SystemExit(1)
-
-    try:
-        result = subprocess.run(
-            [
-                "pg_dump",
-                "-h", host,
-                "-p", str(port),
-                "-U", user,
-                "-F", "p",  # формат: кастомный (binary)
-                "-c",      # с compression
-                "-v",
-                db_name,
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 минут на бэкап
-        )
-        print(f"  ✅ pg_dump завершён с выводом: {result.stdout.strip()[:200]}")
-    except FileNotFoundError:
-        print(f"  ❌ pg_dump не найден в PATH. Установите PostgreSQL.", file=sys.stderr)
-        raise SystemExit(1)
-    except subprocess.CalledProcessError as e:
-        print(f"  ❌ pg_dump завершён с кодом {e.returncode}: {e.stderr.strip()}", file=sys.stderr)
-        raise SystemExit(1)
-    except subprocess.TimeoutExpired:
-        print(f"  ❌ pg_dump завершён дольше чем за 5 минут. Бэкап слишком большой.", file=sys.stderr)
-        raise SystemExit(1)
-    except OSError as e:
-        print(f"  ❌ Ошибка при запуске pg_dump: {e}", file=sys.stderr)
-        raise SystemExit(1)
-
-    # Проверяем, что файл был создан
-    if not backup_file.exists():
-        print(f"  ⚠️  Файл бэкапа {backup_file} не был создан, хотя pg_dump завершён успешно.", file=sys.stderr)
-
-    return str(backup_file)
+        with dst_conn:
+            src_conn.backup(dst_conn)
+        check = dst_conn.execute("PRAGMA integrity_check").fetchone()
+        if not check or check[0] != "ok":
+            raise SystemExit(f"копия не прошла integrity_check: {dest}")
+    finally:
+        dst_conn.close()
+        src_conn.close()
+    if not dest.exists() or dest.stat().st_size <= 0:
+        raise SystemExit(f"файл копии пуст: {dest}")
 
 
-def create_redis_backup(host: str = "localhost", port: int = 6379, db: int = 0) -> str:
-    """Создание бэкапа Redis с помощью rdbdump."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_file = BACKUP_DIR / f"redis_{timestamp}.rdb"
+def gzip_file(path: Path) -> Path:
+    gz_path = Path(str(path) + ".gz")
+    with path.open("rb") as src, gzip.open(gz_path, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+    path.unlink()
+    return gz_path
 
-    print(f"Creating Redis backup: {backup_file}")
-    subprocess.run(
-        ["redis-cli", "rdbdump", str(port), "--rdb", str(backup_file)],
-        check=True,
-        capture_output=True,
-        text=True,
+
+def backup_media(src: Path, dest: Path) -> int:
+    if not src.exists():
+        raise SystemExit(f"нет каталога медиа: {src}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with zipfile.ZipFile(dest, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file in src.rglob("*"):
+            if not file.is_file():
+                continue
+            if file.suffix == ".session" or file.name.endswith(".session-journal"):
+                continue
+            if file.name == ".env":
+                continue
+            archive.write(file, file.relative_to(src).as_posix())
+            count += 1
+    return count
+
+
+def rotate_backups(directory: Path, keep: int) -> int:
+    if keep < 1:
+        raise SystemExit("--keep должен быть >= 1")
+    if not directory.exists():
+        print(f"каталог копий ещё не создан: {directory}")
+        return 0
+    files = sorted(
+        (path for path in directory.iterdir() if path.is_file() and BACKUP_NAME.match(path.name)),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
     )
-    return str(backup_file)
+    removed = 0
+    for old in files[keep:]:
+        old.unlink()
+        print(f"удалён старый файл: {old.name}")
+        removed += 1
+    return removed
 
 
-def create_media_backup() -> str:
-    """Создание бэкапа медиа-файлов (tar.gz)."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    backup_file = BACKUP_DIR / f"media_{timestamp}.tar.gz"
+def main(argv: list[str] | None = None) -> int:
+    _utf8_stdio()
+    parser = argparse.ArgumentParser(description="Копия SQLite и медиа tg-userbot.")
+    parser.add_argument("--db", action="store_true", help="снять копию SQLite")
+    parser.add_argument("--database", help="какой файл базы копировать")
+    parser.add_argument("--media", action="store_true", help="zip каталога медиа, без сессий")
+    parser.add_argument("--media-dir", help="каталог медиа; по умолчанию USERBOT_MEDIA")
+    parser.add_argument("--gzip", action="store_true", help="сжать копию базы gzip")
+    parser.add_argument("--dir", default=str(ROOT / "backups"), help="куда класть копии")
+    parser.add_argument("--rotate", action="store_true", help="оставить только --keep свежих копий")
+    parser.add_argument("--keep", type=int, default=14, help="сколько копий хранить при --rotate")
+    args = parser.parse_args(argv)
+    if not (args.db or args.media or args.rotate):
+        parser.error("укажите --db, --media или --rotate")
 
-    print(f"Creating media backup: {backup_file}")
-    with tarfile.open(backup_file, "w:gz") as tar:
-        # Добавляем медиа-файлы
-        tar.add("media_storage", recursive=True)
-    return str(backup_file)
-
-
-def compress_backup(backup_file: str) -> str:
-    """Сжатие бэкапа с помощью gzip."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    compressed_file = BACKUP_DIR / f"{Path(backup_file).stem}.tar.gz"
-
-    print(f"Compressing backup: {backup_file}")
-    with tarfile.open(compressed_file, "w:gz") as tar:
-        # Добавляем исходный файл
-        tar.add(Path(backup_file).parent / Path(backup_file).name.split(".")[0], recursive=True)
-
-    # Удаляем исходный файл
-    Path(backup_file).unlink(missing_ok=True)
-    return str(compressed_file)
-
-
-def rotate_backups(max_backups: int = 30, retention_days: int = 7) -> None:
-    """Удаление старых бэкапов (older than retention_days)."""
-    now = time.time()
-    max_age = retention_days * 24 * 60 * 60
-
-    print("Rotating old backups...")
-    for backup_file in BACKUP_DIR.iterdir():
-        if backup_file.is_file():
-            age = now - backup_file.stat().st_mtime
-            if age > max_age:
-                backup_file.unlink()
-                print(f"  Deleted: {backup_file}")
-
-    if len(list(BACKUP_DIR.iterdir())) > max_backups:
-        files = list(BACKUP_DIR.iterdir())
-        for f in files[max_backups:]:
-            f.unlink()
-            print(f"  Deleted: {f}")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Скрипт бэкапов для tg-userbot.")
-    parser.add_argument("--db", action="store_true", help="бэкап БД (PostgreSQL)")
-    parser.add_argument("--redis", action="store_true", help="бэкап Redis")
-    parser.add_argument("--media", action="store_true", help="бэкап медиа-файлов")
-    parser.add_argument("--compress", action="store_true", help="сжатие бэкапа")
-    parser.add_argument("--rotate", action="store_true", help="очистка старых бэкапов")
-    parser.add_argument("--db-name", type=str, default="tg_userbot_db", help="название БД")
-    parser.add_argument("--db-host", type=str, default="localhost", help="хост БД")
-    parser.add_argument("--db-port", type=int, default=5432, help="порт БД")
-    parser.add_argument("--db-user", type=str, default="tg_userbot", help="пользователь БД")
-    parser.add_argument("--db-password", type=str, default="supersecret", help="пароль БД")
-    args = parser.parse_args()
-
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-
-    # Бэкап БД
+    out = Path(args.dir).expanduser().resolve()
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.db:
-        backup_file = create_db_backup(
-            db_name=args.db_name,
-            host=args.db_host,
-            port=args.db_port,
-            user=args.db_user,
-            password=args.db_password,
-        )
-        if args.compress:
-            backup_file = compress_backup(backup_file)
-
-    # Бэкап Redis
-    if args.redis:
-        backup_file = create_redis_backup()
-        if args.compress:
-            backup_file = compress_backup(backup_file)
-
-    # Бэкап медиа
+        src = database_path(args.database)
+        dest = out / f"db_{stamp}.db"
+        backup_sqlite(src, dest)
+        if args.gzip:
+            dest = gzip_file(dest)
+        print(f"база: {dest}")
     if args.media:
-        backup_file = create_media_backup()
-        if args.compress:
-            backup_file = compress_backup(backup_file)
-
-    # Ротация
+        dest = out / f"media_{stamp}.zip"
+        count = backup_media(media_path(args.media_dir), dest)
+        print(f"медиа: {dest} ({count} файлов)")
     if args.rotate:
-        rotate_backups()
-
-    print("✅ Backup completed!")
+        removed = rotate_backups(out, args.keep)
+        print(f"ротация: удалено {removed}, хранить {args.keep}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
