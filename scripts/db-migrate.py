@@ -49,7 +49,7 @@ def database_path(explicit: str | None) -> Path:
 def read_tables(path: Path) -> list[str]:
     if not path.exists():
         raise SystemExit(f"нет базы: {path}. Создайте её командой upgrade.")
-    conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         conn.execute("PRAGMA query_only=ON")
         return [
@@ -86,16 +86,17 @@ def upgrade(path: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     _utf8_stdio()
     parser = argparse.ArgumentParser(description="Схема SQLite tg-userbot (без Alembic).")
-    parser.add_argument("--db", help="файл базы; по умолчанию USERBOT_DB или userbot.db")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--db", help="файл базы; по умолчанию USERBOT_DB или userbot.db")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="то же, что upgrade: схема создаётся в bot.py")
-    sub.add_parser("upgrade", help="создать базу и добавить недостающие колонки")
-    sub.add_parser("current", help="показать таблицы, ничего не записывая")
-    sub.add_parser("history", help="какие добавления делает bot.migrate")
-    down = sub.add_parser("downgrade", help="не поддерживается")
+    sub.add_parser("init", parents=[common], help="то же, что upgrade: схема создаётся в bot.py")
+    sub.add_parser("upgrade", parents=[common], help="создать базу и добавить недостающие колонки")
+    sub.add_parser("current", parents=[common], help="показать таблицы, ничего не записывая")
+    sub.add_parser("history", parents=[common], help="какие добавления делает bot.migrate")
+    down = sub.add_parser("downgrade", parents=[common], help="не поддерживается")
     down.add_argument("--revision", nargs="?", default="-1")
-    stamp = sub.add_parser("stamp", help="не поддерживается")
+    stamp = sub.add_parser("stamp", parents=[common], help="не поддерживается")
     stamp.add_argument("version", nargs="?", default="")
 
     args = parser.parse_args(argv)

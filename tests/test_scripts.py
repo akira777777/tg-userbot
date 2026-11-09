@@ -4,6 +4,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +74,8 @@ def test_backup_roundtrip_and_rotate(tmp_path):
 
     old = out / "db_20000101_000000.db"
     old.write_bytes(b"not-a-real-backup")
+    past = time.time() - 10_000
+    os.utime(old, (past, past))
     note = out / "notes.txt"
     note.write_text("keep me", encoding="utf-8")
     rotated = run_script("backup.py", ["--rotate", "--keep", "1", "--dir", str(out)])

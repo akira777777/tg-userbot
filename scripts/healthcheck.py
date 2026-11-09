@@ -52,7 +52,7 @@ def check_sqlite(path: Path) -> list[str]:
         return [f"путь базы не файл: {path}"]
     problems: list[str] = []
     try:
-        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     except sqlite3.Error as exc:
         return [f"база не открывается: {exc}"]
     try:
