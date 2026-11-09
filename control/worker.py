@@ -45,37 +45,45 @@ class ControlWorker:
         )
 
         while self._running:
+            claimed_count = 0
             try:
-                await self._tick()
+                claimed_count = await self._tick()
             except Exception as exc:  # noqa: BLE001 - worker must not die on transient error
                 print(f"Ошибка тика воркера: {self._forward_privacy.redact_log_line(str(exc))}")
-            await asyncio.sleep(self._settings.poll_interval_seconds)
+            if not self._running:
+                break
+            if claimed_count < self._settings.claim_batch_size:
+                await asyncio.sleep(self._settings.poll_interval_seconds)
 
     def _shutdown(self) -> None:
         self._running = False
 
-    async def _tick(self) -> None:
+    async def _tick(self) -> int:
         claimed = self._queue.claim_commands(
             worker_id=self._settings.worker_id,
             batch_size=self._settings.claim_batch_size,
             lease_seconds=self._settings.lease_seconds,
         )
         if not claimed:
-            return
+            return 0
 
         for record in claimed:
             if not self._running:
                 break
             await self._process(record)
+        return len(claimed)
 
     async def _process(self, record: CommandRecord) -> None:
-        # Продлеваем аренду перед началом длительной операции
-        self._queue.renew_lease(
+        # Продлеваем аренду перед началом длительной операции.
+        # Потеря аренды значит, что команду уже забрал другой воркер.
+        renewed = self._queue.renew_lease(
             command_id=record.id,
             worker_id=self._settings.worker_id,
             version=record.version,
             lease_seconds=self._settings.lease_seconds,
         )
+        if renewed is None:
+            return
 
         result = await self._runtime.run_command(record)
         account_alias = result.get("redacted_account", "<account>")
@@ -88,7 +96,7 @@ class ControlWorker:
             )
             self._queue.append_event(
                 command_id=record.id,
-                sequence=1,
+                sequence=2,
                 level="info",
                 event_type="completed",
                 safe_message=f"команда выполнена ({account_alias})",
@@ -101,7 +109,7 @@ class ControlWorker:
             )
             self._queue.append_event(
                 command_id=record.id,
-                sequence=1,
+                sequence=2,
                 level="error",
                 event_type="failed",
                 safe_message=f"ошибка выполнения ({account_alias})",

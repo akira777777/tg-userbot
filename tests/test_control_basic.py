@@ -8,6 +8,8 @@ import hmac
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 
+import pytest
+
 from control.models import (
     CommandKind,
     CommandMode,
@@ -49,16 +51,13 @@ def test_conduct_payload_kind():
 
 
 def test_command_payload_live_requires_nonce():
-    try:
+    with pytest.raises(ValueError, match="confirmation_nonce"):
         CommandPayload(
             kind=CommandKind.BROADCAST,
             mode=CommandMode.LIVE,
             account="main",
             payload=BroadcastPayload(text="x"),
         )
-        raise AssertionError("ожидалась ошибка валидации")
-    except Exception:
-        pass  # ожидается
 
 
 def test_redactor_masks_user_id():

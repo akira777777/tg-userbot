@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -17,14 +18,27 @@ except ImportError:  # pragma: no cover - supabase опционально на �
     Client = object  # type: ignore[misc,valid-type]
 
 from control.config import ControlSettings
-from control.models import CommandRecord, CommandStatus
+from control.models import CommandPayload, CommandRecord, CommandStatus
+
+
+@dataclass(frozen=True, slots=True)
+class LeaseRenewal:
+    """Продление аренды без полного CommandRecord."""
+
+    version: int
+    lease_expires_at: datetime | None
 
 
 class QueueRepository:
-    def __init__(self, settings: ControlSettings) -> None:
+    def __init__(self, settings: ControlSettings, client: Client | None = None) -> None:
         self._settings = settings
-        self._client: Client | None = None
-        if create_client is not None and settings.supabase_url and settings.supabase_service_role_key:
+        self._client: Client | None = client
+        if (
+            client is None
+            and create_client is not None
+            and settings.supabase_url
+            and settings.supabase_service_role_key
+        ):
             self._client = create_client(
                 settings.supabase_url,
                 settings.supabase_service_role_key,
@@ -57,15 +71,7 @@ class QueueRepository:
             .execute()
         )
         if existing.data:
-            rec = existing.data
-            return CommandRecord(
-                id=UUID(rec["id"]),
-                request={**rec["payload"], "kind": rec["kind"], "mode": rec["mode"], "account": rec["account"]},
-                requested_by=owner_telegram_id,
-                status=CommandStatus(rec["status"]),
-                created_at=rec["created_at"],
-                version=rec.get("version", 0),
-            )
+            return self._record(existing.data, idempotency_key=idempotency_key, requested_by=owner_telegram_id)
 
         insert = {
             "id": str(uuid4()),
@@ -91,13 +97,7 @@ class QueueRepository:
             "queued",
             f"команда поставлена в очередь: {kind} ({mode})",
         )
-        return CommandRecord(
-            id=UUID(rec["id"]),
-            request={**rec["payload"], "kind": rec["kind"], "mode": rec["mode"], "account": rec["account"]},
-            requested_by=owner_telegram_id,
-            status=CommandStatus.PENDING,
-            created_at=rec["created_at"],
-        )
+        return self._record(rec, idempotency_key=idempotency_key, requested_by=owner_telegram_id)
 
     def claim_commands(
         self,
@@ -112,31 +112,14 @@ class QueueRepository:
         rpc = self._client.rpc(
             "claim_control_commands",
             {
-                "worker_id": worker_id,
-                "batch_size": batch_size,
-                "lease_seconds": lease_seconds,
+                "p_worker_id": worker_id,
+                "p_batch_size": batch_size,
+                "p_lease_seconds": lease_seconds,
             },
         ).execute()
 
         rows = rpc.data or []
-        return [
-            CommandRecord(
-                id=UUID(row["id"]),
-                request={
-                    **row["payload"],
-                    "kind": row["kind"],
-                    "mode": row["mode"],
-                    "account": row["account"],
-                },
-                requested_by=row["owner_telegram_id"],
-                status=CommandStatus(row["status"]),
-                created_at=row["created_at"],
-                claimed_at=row.get("claimed_at"),
-                lease_expires_at=row.get("lease_expires_at"),
-                version=row.get("version", 0),
-            )
-            for row in rows
-        ]
+        return [self._record(row) for row in rows]
 
     def renew_lease(
         self,
@@ -144,7 +127,7 @@ class QueueRepository:
         worker_id: str,
         version: int,
         lease_seconds: int = 300,
-    ) -> CommandRecord | None:
+    ) -> LeaseRenewal | None:
         """Продлевает аренду команды. Возвращает None если команда уже кем-то другой взята."""
         if self._client is None:
             raise RuntimeError("Supabase client не инициализирован")
@@ -162,6 +145,7 @@ class QueueRepository:
             .eq("id", str(command_id))
             .eq("version", version)
             .eq("status", CommandStatus.CLAIMED.value)
+            .eq("claimed_by", worker_id)
             .select("id,status,version,lease_expires_at")
             .maybe_single()
             .execute()
@@ -169,14 +153,9 @@ class QueueRepository:
         if not result.data:
             return None
         rec = result.data
-        return CommandRecord(
-            id=UUID(rec["id"]),
-            status=CommandStatus(rec["status"]),
-            created_at=rec["created_at"],
-            version=rec.get("version", version + 1),
-            lease_expires_at=rec.get("lease_expires_at"),
-            requested_by=0,  # не нужно для renouvellement
-        )
+        lease_raw = rec.get("lease_expires_at")
+        lease_at = lease_raw if isinstance(lease_raw, datetime) or lease_raw is None else datetime.fromisoformat(lease_raw)
+        return LeaseRenewal(version=int(rec.get("version", version + 1)), lease_expires_at=lease_at)
 
     def complete(
         self,
@@ -199,7 +178,7 @@ class QueueRepository:
             self._client.table("control_commands")
             .update(update)
             .eq("id", str(command_id))
-            .eq("status", CommandStatus.RUNNING.value)  # только из running
+            .eq("status", CommandStatus.CLAIMED.value)
             .select("id,status")
             .maybe_single()
             .execute()
@@ -263,26 +242,7 @@ class QueueRepository:
             .execute()
         )
         rows = result.data or []
-        return [
-            CommandRecord(
-                id=UUID(row["id"]),
-                request={
-                    **row["payload"],
-                    "kind": row["kind"],
-                    "mode": row["mode"],
-                    "account": row["account"],
-                },
-                requested_by=row["owner_telegram_id"],
-                status=CommandStatus(row["status"]),
-                created_at=row["created_at"],
-                claimed_at=row.get("claimed_at"),
-                finished_at=row.get("finished_at"),
-                result_summary=row.get("result_summary"),
-                error_code=row.get("error_code"),
-                version=row.get("version", 0),
-            )
-            for row in rows
-        ]
+        return [self._record(row) for row in rows]
 
     def get_command(self, command_id: UUID, owner_telegram_id: int) -> CommandRecord | None:
         if self._client is None:
@@ -298,25 +258,7 @@ class QueueRepository:
         )
         if not result.data:
             return None
-        row = result.data
-        return CommandRecord(
-            id=UUID(row["id"]),
-            request={
-                **row["payload"],
-                "kind": row["kind"],
-                "mode": row["mode"],
-                "account": row["account"],
-            },
-            requested_by=row["owner_telegram_id"],
-            status=CommandStatus(row["status"]),
-            created_at=row["created_at"],
-            claimed_at=row.get("claimed_at"),
-            finished_at=row.get("finished_at"),
-            lease_expires_at=row.get("lease_expires_at"),
-            result_summary=row.get("result_summary"),
-            error_code=row.get("error_code"),
-            version=row.get("version", 0),
-        )
+        return self._record(result.data)
 
     def append_event(
         self,
@@ -353,6 +295,48 @@ class QueueRepository:
         safe_message: str,
     ) -> None:
         self.append_event(command_id, sequence, level, event_type, safe_message)
+
+    def _request_from_row(self, row: dict, idempotency_key: UUID | None = None) -> CommandPayload:
+        payload = row.get("payload") or {}
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        key = idempotency_key
+        if key is None and row.get("idempotency_key"):
+            key = UUID(str(row["idempotency_key"]))
+        kwargs: dict = {
+            "kind": row["kind"],
+            "mode": row["mode"],
+            "account": row.get("account") or "main",
+            "payload": payload,
+        }
+        if key is not None:
+            kwargs["idempotency_key"] = key
+        nonce = row.get("confirmation_nonce")
+        if nonce:
+            kwargs["confirmation_nonce"] = UUID(str(nonce))
+        return CommandPayload(**kwargs)
+
+    def _record(
+        self,
+        row: dict,
+        *,
+        idempotency_key: UUID | None = None,
+        requested_by: int | None = None,
+    ) -> CommandRecord:
+        owner = requested_by if requested_by is not None else int(row["owner_telegram_id"])
+        return CommandRecord(
+            id=UUID(str(row["id"])),
+            request=self._request_from_row(row, idempotency_key),
+            requested_by=owner,
+            status=CommandStatus(row["status"]),
+            created_at=row["created_at"],
+            claimed_at=row.get("claimed_at"),
+            finished_at=row.get("finished_at"),
+            lease_expires_at=row.get("lease_expires_at"),
+            result_summary=row.get("result_summary"),
+            error_code=row.get("error_code"),
+            version=int(row.get("version") or 0),
+        )
 
     def _digest(self, payload: dict) -> str:
         import hashlib

@@ -69,54 +69,91 @@ def connect_local():
     return con
 
 
+def _rows_by(con, sql, key, params=()):
+    return {row[key]: row for row in con.execute(sql, params)}
+
+
 def gather(con):
     """sqlite -> payload'ы для 6 таблиц зеркала."""
     now = datetime.now(timezone.utc)
     today = now.isoformat(timespec="seconds")[:10]
+    synced = now.isoformat(timespec="seconds")
     out = {}
 
+    coverage = _rows_by(
+        con,
+        "SELECT account, COUNT(*) covered, "
+        "COALESCE(SUM(CASE WHEN can_write=1 THEN 1 ELSE 0 END), 0) writable "
+        "FROM account_groups GROUP BY account",
+        "account",
+    )
+    dm_by_account = _rows_by(
+        con,
+        "SELECT s.account account, COUNT(*) c FROM sent s "
+        "JOIN campaigns c ON c.id=s.campaign "
+        "WHERE c.kind='dm' AND s.status='ok' AND substr(s.ts,1,10)=? "
+        "GROUP BY s.account",
+        "account",
+        (today,),
+    )
     accs = []
     for a in con.execute("SELECT * FROM accounts"):
         name = a["name"]
-        covered = con.execute("SELECT COUNT(*) c FROM account_groups WHERE account=?",
-                              (name,)).fetchone()["c"]
-        writable = con.execute("SELECT COUNT(*) c FROM account_groups "
-                               "WHERE account=? AND can_write=1", (name,)).fetchone()["c"]
-        dm_today = con.execute(
-            "SELECT COUNT(*) c FROM sent s JOIN campaigns c ON c.id=s.campaign "
-            "WHERE s.account=? AND c.kind='dm' AND s.status='ok' AND substr(s.ts,1,10)=?",
-            (name, today)).fetchone()["c"]
+        cov = coverage.get(name)
         accs.append({"name": name, "user_id": a["user_id"], "api_id": a["api_id"],
                      "enabled": bool(a["enabled"]), "daily_budget": a["daily_budget"],
                      "flood_until": a["flood_until"], "note": a["note"],
-                     "groups_covered": covered, "writable_groups": writable,
-                     "dm_today": dm_today, "synced_at": now.isoformat(timespec="seconds")})
+                     "groups_covered": cov["covered"] if cov else 0,
+                     "writable_groups": cov["writable"] if cov else 0,
+                     "dm_today": dm_by_account[name]["c"] if name in dm_by_account else 0,
+                     "synced_at": synced})
     out["tb_accounts"] = (accs, "name")
 
+    group_stats = _rows_by(
+        con,
+        "SELECT group_id, COALESCE(SUM(can_write), 0) w, COUNT(*) t "
+        "FROM account_groups GROUP BY group_id",
+        "group_id",
+    )
+    collected_by_group = _rows_by(
+        con,
+        "SELECT group_id, COUNT(DISTINCT user_id) c FROM member_sources GROUP BY group_id",
+        "group_id",
+    )
     grp = []
     for g in con.execute("SELECT * FROM groups"):
-        cw = con.execute("SELECT COUNT(*) w, COUNT(*) t FROM account_groups WHERE group_id=?",
-                         (g["id"],)).fetchone()
-        agg = "yes" if cw["w"] and cw["w"] == cw["t"] else ("mixed" if cw["w"] else "no")
-        collected = con.execute("SELECT COUNT(DISTINCT user_id) c FROM member_sources "
-                                "WHERE group_id=?", (g["id"],)).fetchone()["c"]
+        cw = group_stats.get(g["id"])
+        writable = cw["w"] if cw else 0
+        total = cw["t"] if cw else 0
+        if writable and writable == total:
+            agg = "yes"
+        elif writable:
+            agg = "mixed"
+        else:
+            agg = "no"
+        collected = collected_by_group.get(g["id"])
         grp.append({"id": g["id"], "title": g["title"], "username": g["username"],
                     "gtype": g["gtype"], "in_broadcast": bool(g["in_broadcast"]),
                     "active": bool(g["active"]), "can_write_agg": agg,
-                    "members_collected": collected,
-                    "synced_at": now.isoformat(timespec="seconds")})
+                    "members_collected": collected["c"] if collected else 0,
+                    "synced_at": synced})
     out["tb_groups"] = (grp, "id")
 
+    camp_stats = _rows_by(
+        con,
+        "SELECT campaign, "
+        "SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) ok, "
+        "SUM(CASE WHEN status!='ok' THEN 1 ELSE 0 END) fail "
+        "FROM sent GROUP BY campaign",
+        "campaign",
+    )
     camps = []
     for c in con.execute("SELECT * FROM campaigns ORDER BY id DESC LIMIT 500"):
-        ok = con.execute("SELECT COUNT(*) n FROM sent WHERE campaign=? AND status='ok'",
-                         (c["id"],)).fetchone()["n"]
-        fail = con.execute("SELECT COUNT(*) n FROM sent WHERE campaign=? AND status!='ok'",
-                           (c["id"],)).fetchone()["n"]
+        stats = camp_stats.get(c["id"])
         camps.append({"id": c["id"], "kind": c["kind"], "account": c["account"],
                       "text": (c["text"] or "")[:500], "created_at": c["created_at"],
-                      "ok": ok, "fail": fail,
-                      "synced_at": now.isoformat(timespec="seconds")})
+                      "ok": stats["ok"] if stats else 0, "fail": stats["fail"] if stats else 0,
+                      "synced_at": synced})
     out["tb_campaigns"] = (camps, "id")
 
     sent = [{"campaign": s["campaign"], "target": s["target"], "account": s["account"],

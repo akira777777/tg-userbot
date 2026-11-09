@@ -13,11 +13,10 @@ async function readTable(table, query) {
 }
 
 export async function loadControlSnapshot() {
-  const [accounts, groups, campaigns, stats] = await Promise.all([
+  const [accounts, campaigns, stats] = await Promise.all([
     readTable("tb_accounts", "select=name,enabled,daily_budget,groups_covered,writable_groups,dm_today,flood_until&order=name"),
-    readTable("tb_groups", "select=id,title,gtype,in_broadcast,active,can_write_agg,members_collected&order=members_collected.desc&limit=300"),
     readTable("tb_campaigns", "select=id,kind,account,created_at,ok,fail&order=id.desc&limit=20"),
     readTable("tb_stats", "select=key,value"),
   ]);
-  return { schemaMissing: [accounts, groups, campaigns, stats].some((result) => result.missing), accounts: accounts.rows, groups: groups.rows, campaigns: campaigns.rows, stats: stats.rows, fetchedAt: new Date().toISOString() };
+  return { schemaMissing: [accounts, campaigns, stats].some((result) => result.missing), accounts: accounts.rows, groups: [], campaigns: campaigns.rows, stats: stats.rows, fetchedAt: new Date().toISOString() };
 }

@@ -72,9 +72,12 @@ CREATE TABLE IF NOT EXISTS media(
   size INTEGER, path TEXT, added_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ag_account ON account_groups(account);
+CREATE INDEX IF NOT EXISTS idx_ag_group ON account_groups(group_id);
 CREATE INDEX IF NOT EXISTS idx_sources_group ON member_sources(group_id);
 CREATE INDEX IF NOT EXISTS idx_sources_user ON member_sources(user_id);
 CREATE INDEX IF NOT EXISTS idx_sent_campaign ON sent(campaign);
+CREATE INDEX IF NOT EXISTS idx_sent_ts ON sent(ts);
+CREATE INDEX IF NOT EXISTS idx_campaigns_kind ON campaigns(kind);
 CREATE INDEX IF NOT EXISTS idx_members_bot ON members(is_bot);
 """
 
@@ -117,6 +120,11 @@ def migrate(conn):
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(sent)")}
     if "account" not in cols:
         conn.execute("ALTER TABLE sent ADD COLUMN account TEXT DEFAULT 'main'")
+    # sent.account появляется только после ALTER, поэтому индекс нельзя
+    # создавать в первом проходе SCHEMA на уже существующей базе.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sent_account_status_ts ON sent(account, status, ts)"
+    )
     conn.execute("INSERT OR IGNORE INTO accounts(name,session,added_at) VALUES('main',?,?)",
                  (LEGACY_SESSION, now_iso()))
     conn.commit()
@@ -327,14 +335,36 @@ async def cmd_watch(args):
     await client.run_until_disconnected()
 
 
-def save_member(conn, u, gid):
-    cur = conn.execute(
+SCRAPE_BATCH = 200
+
+
+def save_members(conn, users, gid):
+    """Пакетная вставка участников одной группы. Коммит остаётся на вызывающем."""
+    if not users:
+        return 0
+    collected = now_iso()
+    member_rows = [
+        (u.id, u.username or "", u.first_name or "", u.last_name or "",
+         int(bool(getattr(u, "bot", False))), collected, gid)
+        for u in users
+    ]
+    source_rows = [(u.id, gid) for u in users]
+    before = conn.execute("SELECT COUNT(*) c FROM members").fetchone()["c"]
+    conn.executemany(
         "INSERT OR IGNORE INTO members(user_id,username,first_name,last_name,is_bot,collected_at,source_group) "
         "VALUES(?,?,?,?,?,?,?)",
-        (u.id, u.username or "", u.first_name or "", u.last_name or "",
-         int(bool(getattr(u, "bot", False))), now_iso(), gid))
-    conn.execute("INSERT OR IGNORE INTO member_sources(user_id,group_id) VALUES(?,?)", (u.id, gid))
-    return cur.rowcount
+        member_rows,
+    )
+    conn.executemany(
+        "INSERT OR IGNORE INTO member_sources(user_id,group_id) VALUES(?,?)",
+        source_rows,
+    )
+    after = conn.execute("SELECT COUNT(*) c FROM members").fetchone()["c"]
+    return after - before
+
+
+def save_member(conn, u, gid):
+    return save_members(conn, [u], gid)
 
 
 async def cmd_scrape(args):
@@ -357,34 +387,47 @@ async def cmd_scrape(args):
             print(f"  пропуск: группа {gid} не найдена среди ваших диалогов")
             continue
         n = 0
-        while True:
-            try:
-                async for u in client.iter_participants(ent, aggressive=True):
-                    n += save_member(conn, u, gid)
-                break
-            except FloodWaitError as e:
-                conn.commit()
-                if e.seconds > 600:  # часовые/суточные паузы — смысл ждать теряет
-                    conn.commit()
-                    sys.exit(f"FloodWait {e.seconds} c (>10 мин) — прерываю scrape; "
-                             f"сохранённое не потеряно, смотри status и повтори scrape")
-                print(f"  FloodWait {e.seconds} c в группе {gid} — жду и повторяю", flush=True)
-                await asyncio.sleep(e.seconds + 1)
-                continue
-            except Exception as e:
-                name = type(e).__name__
-                if "AdminRequired" in name or "Forbidden" in name or "ChatWriteForbidden" in name:
-                    print(f"  группа {gid} «{ent.title}»: список участников закрыт "
-                          f"для не-админов ({name}) — пропущена")
-                else:
-                    print(f"  группа {gid} «{ent.title}»: ошибка {name}: {str(e)[:100]}")
-                break
+        buf = []
+        try:
+            async for u in client.iter_participants(ent, aggressive=True):
+                buf.append(u)
+                if len(buf) >= SCRAPE_BATCH:
+                    n += save_members(conn, buf, gid)
+                    buf.clear()
+            if buf:
+                n += save_members(conn, buf, gid)
+                buf.clear()
+        except FloodWaitError as e:
+            if buf:
+                n += save_members(conn, buf, gid)
+                buf.clear()
+            conn.commit()
+            if e.seconds > 600:  # часовые/суточные паузы — смысл ждать теряет
+                sys.exit(f"FloodWait {e.seconds} c (>10 мин) — прерываю scrape; "
+                         f"сохранённое не потеряно, смотри status и повтори scrape")
+            print(f"  FloodWait {e.seconds} c в группе {gid} — жду и оставляю группу на следующий scrape",
+                  flush=True)
+            await asyncio.sleep(e.seconds + 1)
+        except Exception as e:
+            name = type(e).__name__
+            if "AdminRequired" in name or "Forbidden" in name or "ChatWriteForbidden" in name:
+                print(f"  группа {gid} «{ent.title}»: список участников закрыт "
+                      f"для не-админов ({name}) — пропущена")
+            else:
+                print(f"  группа {gid} «{ent.title}»: ошибка {name}: {str(e)[:100]}")
         conn.commit()
         print(f"  группа {gid} «{ent.title}»: новых участников {n}")
         total += n
         await asyncio.sleep(2)  # мягкая пауза между группами
     all_m = conn.execute("SELECT COUNT(*) c FROM members").fetchone()["c"]
     print(f"Готово: собрано {total} новых (всего в базе: {all_m})", flush=True)
+
+
+# s.target хранится текстом; сравнение со стороны sent оставляет индекс пригодным.
+NOT_YET_DMED = (
+    "NOT EXISTS (SELECT 1 FROM sent s JOIN campaigns c ON c.id=s.campaign "
+    "WHERE c.kind='dm' AND s.status='ok' AND s.target=CAST(m.user_id AS TEXT))"
+)
 
 
 def dm_targets(conn, group_id=None, repeat_ok=False, limit=None):
@@ -396,8 +439,7 @@ def dm_targets(conn, group_id=None, repeat_ok=False, limit=None):
         q += " AND m.user_id IN (SELECT user_id FROM member_sources WHERE group_id=?)"
         p.append(group_id)
     if not repeat_ok:
-        q += (" AND m.user_id NOT IN (SELECT CAST(s.target AS INTEGER) FROM sent s "
-              "JOIN campaigns c ON c.id=s.campaign WHERE c.kind='dm' AND s.status='ok')")
+        q += f" AND {NOT_YET_DMED}"
     q += " ORDER BY m.collected_at"
     if limit:
         q += " LIMIT ?"
@@ -795,10 +837,26 @@ CLOUD_HOOK = {"cmd_broadcast", "cmd_dmsend", "cmd_conduct", "cmd_scrape",
               "cmd_media", "cmd_blacklist", "cmd_export"}
 
 
+def _skip_cloud_push(args) -> bool:
+    """Чтение не меняет зеркало: полный push после list/export только греет SQLite."""
+    name = getattr(args.func, "__name__", "")
+    if name == "cmd_export":
+        return True
+    if name == "cmd_blacklist" and getattr(args, "cmd", None) == "list":
+        return True
+    if name == "cmd_accounts" and getattr(args, "op", None) == "list":
+        return True
+    if name == "cmd_groups" and getattr(args, "list", False) and not getattr(args, "sync", False) and not getattr(args, "probe", False):
+        return True
+    return False
+
+
 def maybe_cloud_push(args):
     if os.environ.get("AUTO_CLOUD") != "1":
         return
     if getattr(args.func, "__name__", "") not in CLOUD_HOOK:
+        return
+    if _skip_cloud_push(args):
         return
     try:
         subprocess.Popen([sys.executable, str(ROOT / "cloud.py"), "push"],
@@ -1095,9 +1153,7 @@ def cmd_status(args):
         print(f"    #{s['campaign']} {s['kind']} -> {s['target']}: {s['status']} ({s['ts']})")
     free = conn.execute(
         "SELECT COUNT(*) c FROM members m WHERE m.is_bot=0 AND m.user_id "
-        "NOT IN (SELECT user_id FROM blacklist) AND m.user_id NOT IN "
-        "(SELECT CAST(s.target AS INTEGER) FROM sent s JOIN campaigns c ON c.id=s.campaign "
-        "WHERE c.kind='dm' AND s.status='ok')").fetchone()["c"]
+        f"NOT IN (SELECT user_id FROM blacklist) AND {NOT_YET_DMED}").fetchone()["c"]
     print(f"  доступных для новых DM: {free}")
 
 

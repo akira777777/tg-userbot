@@ -28,16 +28,13 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: "pip"
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
       - name: Install dependencies
         run: |
-          poetry install --no-interaction --no-root --with dev
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
       - name: Run tests
         run: |
-          pytest tests/ -v --cov=src/tg_userbot --cov-report=xml:coverage.xml --cov-report=html:htmlcov
+          pytest tests/ -q --cov=control --cov-report=xml:coverage.xml --cov-report=html:htmlcov
       - name: Upload coverage
         uses: codecov/codecov-action@v4
         with:
