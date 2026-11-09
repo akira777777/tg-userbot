@@ -27,6 +27,24 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _agent_dbg(hypothesis, location, message, data):
+    # #region agent log
+    try:
+        import json
+        import time
+        with open(ROOT / ".cursor" / "debug-1887e6.log", "a", encoding="utf-8") as _f:
+            _f.write(json.dumps({
+                "sessionId": "1887e6", "runId": "pre-fix", "hypothesisId": hypothesis,
+                "location": location, "message": message, "data": data,
+                "timestamp": int(time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # #endregion
+
+
 DB_PATH = Path(os.environ.get("USERBOT_DB", ROOT / "userbot.db"))
 SESSION_DIR = Path(os.environ.get("USERBOT_SESSIONS", ROOT / "sessions"))
 MEDIA_DIR = Path(os.environ.get("USERBOT_MEDIA", ROOT / "media_cache"))
@@ -795,6 +813,11 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
                        (kind, text, now_iso(), account))
     camp = cur.lastrowid
     conn.commit()
+    # #region agent log
+    _agent_dbg("A", "bot.py:send_run", "campaign row committed before send loop",
+               {"dry_run": bool(args.dry_run), "kind": kind, "campaign": camp,
+                "targets": len(targets)})
+    # #endregion
     done = ok = 0
     halt = False
     halt_reason = ""
