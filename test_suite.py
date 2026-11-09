@@ -353,6 +353,15 @@ def test_peerflood_is_not_a_target_failure():
     assert bot.slowmode_exceeds(_Ent(slowmode_seconds=3600), 60) is True
     assert bot.slowmode_exceeds(_Ent(slowmode_seconds=5), None) is False
 
+    class _Rpc(Exception):
+        def __init__(self, message):
+            self.message = message
+
+    assert bot.target_disposition(_Rpc("TOPIC_CLOSED"), "broadcast") == "remember"
+    assert bot.permanent_reason(_Rpc("TOPIC_CLOSED"), "broadcast") == "topic_closed"
+    assert bot.target_disposition(_Rpc("ALLOW_PAYMENT_REQUIRED_1"), "broadcast") == "remember"
+    assert bot.permanent_reason(_Rpc("ALLOW_PAYMENT_REQUIRED_1"), "broadcast") == "payment"
+
 
 def test_broadcast_cap_and_group_flags(seeded_db):
     """Дневной потолок групп режет выборку. Писать можно, если может хоть один аккаунт."""

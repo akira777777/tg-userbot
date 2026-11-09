@@ -24,6 +24,12 @@ import sqlite3
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+
+try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -528,6 +534,8 @@ PERMANENT_BROADCAST = {
     "UserNotParticipantError": "not_member",
     "ChatGuestSendForbiddenError": "no_send",
     "ChatSendPlainForbiddenError": "no_send",
+    "TOPIC_CLOSED": "topic_closed",
+    "ALLOW_PAYMENT_REQUIRED": "payment",
 }
 
 REASON_RU = {
@@ -539,6 +547,7 @@ REASON_RU = {
     "not_member": "аккаунт не состоит",
     "restricted": "чат ограничен",
     "topic_closed": "тема закрыта",
+    "payment": "чат требует оплату сообщения",
     "bot": "бот",
     "deleted": "удалённый аккаунт",
     "no_address": "нет ника и access_hash",
@@ -556,6 +565,25 @@ def _error_name(exc):
     return exc if isinstance(exc, str) else type(exc).__name__
 
 
+def _error_tokens(exc):
+    """Имя класса и код сервера. Telethon 1.45 отдаёт TOPIC_CLOSED и
+    ALLOW_PAYMENT_REQUIRED_1 общим BadRequestError/ForbiddenError."""
+    names = [_error_name(exc)]
+    if isinstance(exc, str):
+        return names
+    message = str(getattr(exc, "message", "") or "").strip()
+    if not message:
+        return names
+    code = message.split()[0]
+    if code and code not in names:
+        names.append(code)
+    if len(code) > 2 and code.rsplit("_", 1)[-1].isdigit():
+        base = code.rsplit("_", 1)[0]
+        if base not in names:
+            names.append(base)
+    return names
+
+
 def send_error_class(exc):
     """flood | slowmode | spam | other. PeerFlood — spam, не обычный fail цели."""
     name = _error_name(exc)
@@ -569,9 +597,12 @@ def send_error_class(exc):
 
 
 def permanent_reason(exc, kind):
-    name = _error_name(exc)
     table = PERMANENT_DM if kind == "dm" else PERMANENT_BROADCAST
-    return table.get(name)
+    for name in _error_tokens(exc):
+        reason = table.get(name)
+        if reason:
+            return reason
+    return None
 
 
 def target_disposition(exc, kind):
@@ -592,7 +623,7 @@ def target_disposition(exc, kind):
         return "halt_dm_queue" if kind == "dm" else "halt_account"
     if klass == "slowmode":
         return "skip"
-    if permanent_reason(name, kind):
+    if permanent_reason(exc, kind):
         return "remember"
     return "fail"
 
@@ -1925,7 +1956,8 @@ async def cmd_conduct(args):
                 conn.execute("INSERT OR REPLACE INTO sent(campaign,target,status,ts,account) "
                              "VALUES(?,?,?,?,?)", (camp, key, status, now_iso(), name))
                 conn.commit()
-                print(f"  fail [{name}] {label}: {type(e).__name__}: {str(e)[:80]}")
+                verb = "skip" if disp == "skip" else "fail"
+                print(f"  {verb} [{name}] {label}: {type(e).__name__}: {str(e)[:80]}")
             await asyncio.sleep(random.uniform(dmin, dmax))
 
     queued = sum(len(q) for q in queues.values())
