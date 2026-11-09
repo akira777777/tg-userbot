@@ -4,238 +4,384 @@
 <meta charset="utf-8">
 <title>tg-userbot · оркестр</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Unbounded:wght@500;600&display=swap" rel="stylesheet">
 <style>
-  :root { color-scheme: dark; --bg:#131619; --card:#1b1f24; --line:#2a3038; --fg:#e6e9ee;
-          --mut:#96a0ad; --acc:#4f9cf9; --ok:#3fb950; --warn:#d29922; --err:#f85149; }
+  :root {
+    color-scheme: dark;
+    --bg: #0c0e11;
+    --ink: #ece6db;
+    --mut: #8f877c;
+    --line: #2c322c;
+    --card: #141814;
+    --well: #0a0c0e;
+    --amber: #e2a23a;
+    --amber-dim: rgba(226, 162, 58, .14);
+    --ok: #8fbf78;
+    --err: #e15b4a;
+    --warn: #e2a23a;
+    --shadow: 0 18px 40px rgba(0, 0, 0, .28);
+  }
   * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.45 "Segoe UI", system-ui, sans-serif; }
-  header { display:flex; flex-wrap:wrap; gap:10px; align-items:center;
-           padding:12px 18px; border-bottom:1px solid var(--line);
-           position:sticky; top:0; background:var(--bg); z-index:5;}
-  h1 { font-size:16px; margin:0 12px 0 0; }
-  .chip { background:var(--card); border:1px solid var(--line); border-radius:8px;
-          padding:4px 10px; font-size:12.5px; color:var(--mut); }
-  .chip b { color:var(--fg); }
-  main { display:grid; grid-template-columns: minmax(360px, 5fr) minmax(420px, 6fr);
-         gap:14px; padding:14px 18px; align-items:start; }
-  @media (max-width: 1080px){ main{ grid-template-columns:1fr; } }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:12px;
-          padding:12px 14px; margin-bottom:14px; }
-  .card h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em;
-             color:var(--mut); margin:0 0 10px; }
-  button { background:#232a33; color:var(--fg); border:1px solid var(--line);
-           border-radius:8px; padding:6px 12px; font-size:13px; cursor:pointer; }
-  button:hover { border-color:var(--acc); }
-  button.pri { background:#1f4b8f; border-color:#2f6dc4; }
-  button.danger { color:var(--err); }
-  button:disabled { opacity:.45; cursor:default; }
-  textarea, input[type=text], input[type=number], select {
-    width:100%; background:#101317; color:var(--fg); border:1px solid var(--line);
-    border-radius:8px; padding:7px 9px; font:13px/1.4 inherit; margin:4px 0 8px; }
-  textarea { min-height:74px; }
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .row label { color:var(--mut); font-size:12.5px; display:flex; gap:4px; align-items:center; }
-  .num { width:88px; }
-  table { width:100%; border-collapse:collapse; font-size:12.5px; }
-  th, td { padding:4px 6px; border-bottom:1px solid var(--line); text-align:left; }
-  td.title { max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  th { color:var(--mut); font-weight:600; }
-  .tblwrap { max-height:260px; overflow:auto; }
-  #log { background:#0d0f12; border:1px solid var(--line); border-radius:10px;
-         padding:10px; height:400px; overflow:auto;
-         font:12px/1.5 "Cascadia Mono", Consolas, monospace; white-space:pre-wrap; }
-  .l-ok { color:var(--ok);} .l-fail{ color:var(--err);} .l-warn{ color:var(--warn);}
-  .l-cmd { color:var(--acc);} .l-dim{ color:var(--mut);}
-  .dot { width:9px; height:9px; border-radius:50%; background:var(--ok);
-         display:inline-block; margin-right:6px; }
-  .dot.off { background:#555; }
-  .st-run { color:var(--warn); font-weight:600; }
-  .st-flood { color:var(--err); }
-  .st-off { color:var(--mut); }
-  .badge { border-radius:6px; padding:1px 7px; font-size:11.5px; border:1px solid var(--line); }
-  .mdgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(170px,1fr)); gap:8px; }
-  .mdtile { background:#101317; border:1px solid var(--line); border-radius:10px;
-            padding:6px; font-size:12px; display:flex; flex-direction:column; gap:5px; }
-  .mdtile.sel { border-color:var(--acc); box-shadow:0 0 0 1px var(--acc); }
-  .mdthumb { width:100%; height:110px; object-fit:cover; border-radius:7px;
-             background:#000; cursor:pointer; }
-  .mdrow { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
-  .mdrow button { padding:2px 8px; font-size:11.5px; }
-  #md_box { position:fixed; inset:0; background:rgba(0,0,0,.88); display:none;
-            align-items:center; justify-content:center; z-index:50; flex-direction:column; }
-  #md_box img, #md_box video { max-width:92vw; max-height:82vh; border-radius:10px; background:#000; }
-  #md_box .mdcap { color:var(--fg); margin-top:8px; font-size:13px; }
-  .mdbg { position:absolute; top:6px; right:6px; font-size:11px; padding:1px 6px;
-          background:rgba(0,0,0,.6); border-radius:6px; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--ink);
+    background:
+      radial-gradient(900px 280px at 8% -10%, rgba(226, 162, 58, .13), transparent 60%),
+      linear-gradient(180deg, rgba(255,255,255,.025), transparent 180px),
+      var(--bg);
+    font: 14px/1.45 "Golos Text", "Segoe UI", sans-serif;
+  }
+  body::before {
+    content: "";
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(236, 230, 219, .035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(236, 230, 219, .035) 1px, transparent 1px);
+    background-size: 28px 28px;
+    mask-image: linear-gradient(180deg, #000 0, transparent 420px);
+  }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  header {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; flex-wrap: wrap; gap: 16px 28px;
+    align-items: center; justify-content: space-between;
+    padding: 16px 22px 14px;
+    background: rgba(12, 14, 17, .9);
+    border-bottom: 1px solid var(--line);
+    backdrop-filter: blur(10px);
+  }
+  .brand { display: flex; align-items: baseline; gap: 12px; min-width: 240px; }
+  h1 {
+    margin: 0;
+    font-family: Unbounded, "Segoe UI", sans-serif;
+    font-size: 18px; font-weight: 600; letter-spacing: -.03em;
+  }
+  .brand p { margin: 0; color: var(--amber); font-size: 12px; letter-spacing: .16em; text-transform: uppercase; }
+  .live { display: inline-flex; align-items: center; color: var(--mut); font-size: 12px; }
+  .header-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+  .field { display: flex; flex-direction: column; gap: 4px; color: var(--mut); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  .field select, .field input { text-transform: none; letter-spacing: 0; font-size: 13px; }
+  .meters {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 8px;
+    padding: 14px 22px 0;
+  }
+  .meter {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px 8px;
+    min-height: 68px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+  }
+  .meter span { display: block; color: var(--mut); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  .meter b, .meter-status b {
+    display: block; margin-top: 4px;
+    font-family: Unbounded, "Segoe UI", sans-serif;
+    font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums;
+    letter-spacing: -.03em; text-transform: none;
+  }
+  .meter-wide, .meter-status { grid-column: span 2; }
+  .meter-wide b { font-size: 13px; line-height: 1.35; }
+  .stage {
+    display: grid;
+    grid-template-columns: minmax(0, 1.45fr) minmax(320px, .8fr);
+    gap: 14px;
+    padding: 14px 22px 22px;
+    align-items: start;
+  }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .tab {
+    background: transparent; color: var(--mut);
+    border: 1px solid transparent; border-radius: 999px;
+    padding: 7px 12px; font-size: 13px;
+  }
+  .tab.on { color: var(--ink); background: var(--amber-dim); border-color: rgba(226, 162, 58, .45); }
+  .view { display: none; }
+  .view.on { display: block; animation: rise .28s ease; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  .card {
+    background: rgba(20, 24, 20, .92);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 14px 16px 16px;
+    margin-bottom: 12px;
+    box-shadow: var(--shadow);
+  }
+  .card h2 {
+    margin: 0 0 12px;
+    font-family: Unbounded, "Segoe UI", sans-serif;
+    font-size: 13px; font-weight: 500; letter-spacing: -.02em;
+  }
+  .note { color: var(--mut); font-size: 12.5px; margin: 8px 0 0; }
+  button.act, button.pri, button.danger, button.quiet {
+    border-radius: 9px; padding: 7px 12px; font-size: 13px;
+  }
+  button.act, button.quiet {
+    background: #1c221c; color: var(--ink); border: 1px solid var(--line);
+  }
+  button.act:hover, button.quiet:hover, .tab:hover { border-color: rgba(226, 162, 58, .7); }
+  button.pri {
+    background: transparent; color: var(--amber);
+    border: 1px solid rgba(226, 162, 58, .7);
+  }
+  .card:not(:has(#bc_dry:checked)) #bc_send,
+  .card:not(:has(#dm_dry:checked)) #dm_send,
+  .card:not(:has(#cd_dry:checked)) #cd_send {
+    background: var(--err); color: #1a0c0a; border-color: var(--err);
+  }
+  button.danger { background: transparent; color: var(--err); border: 1px solid rgba(225, 91, 74, .55); }
+  button:disabled { opacity: .45; cursor: default; }
+  textarea, input[type=text], input[type=password], input[type=number], select {
+    width: 100%; background: var(--well); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px;
+  }
+  textarea { min-height: 84px; resize: vertical; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row label { color: var(--mut); font-size: 12.5px; display: flex; gap: 6px; align-items: center; }
+  .num { width: 76px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+  td.title { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  th { color: var(--mut); font-weight: 500; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+  tr:hover td { background: rgba(226, 162, 58, .05); }
+  .tblwrap { max-height: 320px; overflow: auto; }
+  .log-dock { position: sticky; top: 86px; }
+  #log {
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px;
+    height: min(68vh, 640px);
+    overflow: auto;
+    font: 12px/1.55 "Cascadia Mono", Consolas, monospace;
+    white-space: pre-wrap;
+  }
+  .l-ok { color: var(--ok); } .l-fail { color: var(--err); } .l-warn { color: var(--warn); }
+  .l-cmd { color: var(--amber); } .l-dim { color: var(--mut); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; margin-right: 6px; box-shadow: 0 0 0 4px rgba(143, 191, 120, .12); }
+  .dot.off { background: #5c564e; box-shadow: none; }
+  .st-run { color: var(--amber); font-weight: 600; }
+  .st-flood { color: var(--err); }
+  .st-off { color: var(--mut); }
+  .badge { border-radius: 6px; padding: 1px 7px; font-size: 11px; border: 1px solid var(--line); }
+  .mdgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px; }
+  .mdtile { background: var(--well); border: 1px solid var(--line); border-radius: 12px; padding: 6px; font-size: 12px; display: flex; flex-direction: column; gap: 5px; }
+  .mdtile.sel { border-color: var(--amber); }
+  .mdthumb { width: 100%; height: 110px; object-fit: cover; border-radius: 8px; background: #000; cursor: pointer; }
+  .mdrow { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+  .mdrow button { padding: 3px 7px; font-size: 11.5px; }
+  #md_box { position: fixed; inset: 0; background: rgba(6, 7, 8, .9); display: none; align-items: center; justify-content: center; z-index: 50; flex-direction: column; }
+  #md_box img, #md_box video { max-width: 92vw; max-height: 82vh; border-radius: 12px; background: #000; }
+  #md_box .mdcap { color: var(--ink); margin-top: 8px; font-size: 13px; }
+  .mdbg { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 1px 6px; background: rgba(0,0,0,.6); border-radius: 6px; }
+  @media (max-width: 1080px) {
+    .meters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .stage { grid-template-columns: 1fr; }
+    .log-dock { position: static; }
+    #log { height: 360px; }
+    th, td { white-space: nowrap; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>🎻 tg-userbot · оркестр</h1>
-  <span><span class="dot off" id="conn"></span><span id="connTxt">подключение…</span></span>
-  <span class="chip">аккаунтов: <b id="st_acc">–</b></span>
-  <span class="chip">групп: <b id="st_groups">–</b></span>
-  <span class="chip">участников: <b id="st_members">–</b></span>
-  <span class="chip">доступно для новых DM: <b id="st_dm">–</b></span>
-  <span class="chip">blacklist: <b id="st_bl">–</b></span>
-  <span class="chip">покрытие: <b id="st_cov">–</b></span>
-  <span class="chip" id="condChip">дирижёр: <b>свободен</b></span>
-  <span class="chip" id="cloudChip">☁ –</span>
-  <label style="margin-left:auto;color:var(--mut);font-size:12.5px">активный
-    <select id="accSel" style="width:130px;margin:0"></select>
-  </label>
-  <button class="danger" id="btnStop">⏹ Стоп (аккаунт)</button>
-  <button class="danger" id="btnStopAll">⏹ всем</button>
+  <div class="brand">
+    <h1>tg-userbot</h1>
+    <p>оркестр</p>
+    <span class="live"><span class="dot off" id="conn"></span><span id="connTxt">подключение…</span></span>
+  </div>
+  <div class="header-tools">
+    <label class="field">активный
+      <select id="accSel" style="width:140px"></select>
+    </label>
+    <label class="field">токен записи
+      <input id="webToken" type="password" autocomplete="off" placeholder="токен записи" style="width:180px">
+    </label>
+    <button type="button" class="danger" id="btnStop">Стоп аккаунта</button>
+    <button type="button" class="danger" id="btnStopAll">Стоп всем</button>
+  </div>
 </header>
 
-<main>
-<div>
-  <div class="card">
-    <h2>Аккаунты (по одному слоту задач на аккаунт, разные — параллельно)</h2>
-    <div class="tblwrap">
-      <table id="atab">
-        <thead><tr><th>имя</th><th>id</th><th>покрытие</th><th>DM сегодня</th><th>статус</th><th>задача</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <button data-fan="sync">🎭 Синк всем</button>
-      <button data-fan="scrape">🎭 Scrape всем</button>
-      <button data-fan="watch">🎭 Watch всем</button>
-      <button data-fan="probe">🧹 Probe всем</button>
-      <button data-fan="privacy">🔒 Приватность всем</button>
-      <button data-fan="align" title="догнать группы из общей базы + единая приватность + probe">🎯 Align всем</button>
-    </div>
-    <div class="l-dim" style="font-size:12px;margin-top:6px">
-      Новый аккаунт: в терминале <code>bot.py login --account имя</code> (код SMS вводится в терминале),
-      либо импорт готового session-файла ниже.
-    </div>
-    <div class="row" style="margin-top:6px">
-      <input type="text" id="imp_name" placeholder="имя" style="width:110px;margin:0">
-      <input type="text" id="imp_path" placeholder="C:\...\x.session" style="flex:1;margin:0">
-      <button id="imp_btn">импортировать</button>
-      <button id="btnAccList">обновить</button>
-    </div>
+<section class="meters" aria-label="Сводка">
+  <div class="meter"><span>Аккаунты</span><b id="st_acc">–</b></div>
+  <div class="meter"><span>Группы</span><b id="st_groups">–</b></div>
+  <div class="meter"><span>Участники</span><b id="st_members">–</b></div>
+  <div class="meter"><span>Новые DM</span><b id="st_dm">–</b></div>
+  <div class="meter"><span>Blacklist</span><b id="st_bl">–</b></div>
+  <div class="meter meter-wide"><span>Покрытие</span><b id="st_cov">–</b></div>
+  <div class="meter meter-status" id="condChip">дирижёр: <b>свободен</b></div>
+  <div class="meter meter-status" id="cloudChip">—</div>
+</section>
+
+<div class="stage">
+  <div class="workspace">
+    <nav class="tabs" aria-label="Разделы">
+      <button type="button" class="tab on" data-tab="overview">Обзор</button>
+      <button type="button" class="tab" data-tab="campaigns">Кампании</button>
+      <button type="button" class="tab" data-tab="groups">Группы</button>
+      <button type="button" class="tab" data-tab="media">Медиа</button>
+      <button type="button" class="tab" data-tab="service">Служебное</button>
+    </nav>
+
+    <section class="view on" data-view="overview">
+      <div class="card">
+        <h2>Аккаунты</h2>
+        <div class="tblwrap">
+          <table id="atab">
+            <thead><tr><th>имя</th><th>id</th><th>покрытие</th><th>DM сегодня</th><th>статус</th><th>задача</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="note">Один слот задач на аккаунт. Разные аккаунты работают параллельно.</p>
+        <div class="row" style="margin-top:10px">
+          <button type="button" class="act" data-fan="sync">Синк всем</button>
+          <button type="button" class="act" data-fan="scrape">Scrape всем</button>
+          <button type="button" class="act" data-fan="watch">Watch всем</button>
+          <button type="button" class="act" data-fan="probe">Probe всем</button>
+          <button type="button" class="act" data-fan="privacy">Приватность всем</button>
+          <button type="button" class="act" data-fan="align" title="догнать группы из общей базы + единая приватность + probe">Align всем</button>
+          <button type="button" class="quiet" id="btnAccList">Обновить</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Последние кампании</h2>
+        <div class="tblwrap" style="max-height:220px">
+          <table id="ctab">
+            <thead><tr><th>#</th><th>тип</th><th>аккаунт</th><th>когда</th><th>ok</th><th>fail</th><th>текст</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="campaigns">
+      <div class="card">
+        <h2>Рассылка в группы</h2>
+        <textarea id="bc_text" placeholder="Текст сообщения…"></textarea>
+        <div class="row">
+          <label><input type="checkbox" id="bc_dry" checked> dry-run</label>
+          <label>пауза <input class="num" type="number" id="bc_lo" value="3">–<input class="num" type="number" id="bc_hi" value="8"> c</label>
+          <label>лимит <input class="num" type="number" id="bc_runs" placeholder="∞"></label>
+          <label>медиа <select id="bc_media" style="width:160px"><option value="">— без —</option></select></label>
+          <span style="flex:1"></span>
+          <button type="button" class="pri" id="bc_send">Проверить</button>
+        </div>
+        <p class="note">Отмеченные группы берутся из раздела «Группы». Аккаунт пишет только туда, где состоит. Повтор в те же группы блокируется 24 часа.</p>
+      </div>
+      <div class="card">
+        <h2>Личные сообщения</h2>
+        <textarea id="dm_text" placeholder="Текст личного сообщения… (добавь «ответь СТОП»)" style="min-height:64px"></textarea>
+        <div class="row">
+          <label><input type="checkbox" id="dm_dry" checked> dry-run</label>
+          <label>лимит <input class="num" type="number" id="dm_limit" value="10"></label>
+          <label>пауза <input class="num" type="number" id="dm_lo" value="20">–<input class="num" type="number" id="dm_hi" value="45"> c</label>
+          <label><input type="checkbox" id="dm_repeat"> repeat-ok</label>
+          <label>группа <select id="dm_group" style="width:180px"><option value="">все</option></select></label>
+          <label>медиа <select id="dm_media" style="width:160px"><option value="">— без —</option></select></label>
+          <span style="flex:1"></span>
+          <button type="button" class="pri" id="dm_send">Проверить</button>
+        </div>
+        <p class="note">Кому уже писал любой аккаунт, повторно не пишем. У каждого аккаунта свой дневной бюджет.</p>
+      </div>
+      <div class="card">
+        <h2>Дирижёр</h2>
+        <textarea id="cd_text" placeholder="Текст для всех целей…" style="min-height:64px"></textarea>
+        <div class="row">
+          <label>тип <select id="cd_kind" style="width:130px"><option value="broadcast">broadcast</option><option value="dm">dm</option></select></label>
+          <label><input type="checkbox" id="cd_dry" checked> dry-run</label>
+          <label>лимит <input class="num" type="number" id="cd_limit" value="20"></label>
+          <label>окно <input class="num" type="number" id="cd_window" value="6"> ч</label>
+          <label><input type="checkbox" id="cd_repeat"> repeat-ok</label>
+          <label>медиа <select id="cd_media" style="width:160px"><option value="">— без —</option></select></label>
+          <button type="button" class="pri" id="cd_send">Проверить</button>
+        </div>
+        <p class="note">Цели делятся между включёнными аккаунтами. Пауза одного аккаунта не отдаёт его цель другому. В группы пишет только тот, кто в них состоит.</p>
+      </div>
+      <div class="card">
+        <h2>Blacklist</h2>
+        <div class="row">
+          <input type="text" id="bl_value" placeholder="user_id или @ник" style="width:200px">
+          <input type="text" id="bl_reason" placeholder="причина" style="width:180px">
+          <button type="button" class="act" id="bl_add">В blacklist</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="groups">
+      <div class="card">
+        <h2>Группы (<span id="gcount">0</span>)</h2>
+        <p class="note">Отмеченные строки уходят в scrape выбранных и в рассылку по группам.</p>
+        <div class="tblwrap">
+          <table id="gtab">
+            <thead><tr><th></th><th>id</th><th>название</th><th>участн.</th><th>в рассылке</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="media">
+      <div class="card">
+        <h2>Медиа-библиотека</h2>
+        <div class="row" style="margin-bottom:8px">
+          <input type="file" id="md_file" style="display:none" multiple>
+          <button type="button" class="act" id="md_pick">Загрузить</button>
+          <button type="button" class="act" id="md_pull">Pull из Избранного</button>
+          <button type="button" class="act" id="md_compare">Сравнить с main</button>
+        </div>
+        <div id="md_grid" class="mdgrid"></div>
+        <p class="note" id="md_hint">нет медиа — загрузи файл или нажми Pull. Файл без кэша можно вернуть кнопкой «кэш».</p>
+      </div>
+    </section>
+
+    <section class="view" data-view="service">
+      <div class="card">
+        <h2>Выбранный аккаунт</h2>
+        <div class="row">
+          <button type="button" class="act" data-act="sync">Синк групп</button>
+          <button type="button" class="act" data-act="scrape">Scrape все</button>
+          <button type="button" class="act" data-act="scrape_sel">Scrape выбранные</button>
+          <button type="button" class="act" data-act="export">Export CSV</button>
+          <button type="button" class="act" data-act="status">Status</button>
+          <button type="button" class="act" data-act="probe" title="groups --probe: проверить права записи, закрыть непроходимые">Probe доступов</button>
+          <button type="button" class="act" data-act="privacy" title="максимальная конфиденциальность аккаунта (Nobody везде)">Приватность</button>
+          <button type="button" class="act" data-act="watch">Watch</button>
+          <button type="button" class="act" data-act="cloud" title="обновить облачное зеркало Supabase (агрегаты, без ников)">Зеркало</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Импорт session</h2>
+        <p class="note">Новый аккаунт по коду: в терминале <code>bot.py login --account имя</code>. Здесь можно подключить уже готовый файл.</p>
+        <div class="row" style="margin-top:8px">
+          <input type="text" id="imp_name" placeholder="имя" style="width:120px">
+          <input type="text" id="imp_path" placeholder="C:\...\x.session" style="flex:1">
+          <button type="button" class="act" id="imp_btn">Импортировать</button>
+        </div>
+      </div>
+    </section>
   </div>
 
-  <div class="card">
-    <h2>Действия для выбранного аккаунта</h2>
-    <div class="row">
-      <button data-act="sync">🔄 Синк групп</button>
-      <button data-act="scrape">👥 Scrape все</button>
-      <button data-act="scrape_sel">Scrape выбранные</button>
-      <button data-act="export">📤 Export CSV</button>
-      <button data-act="status">📊 Status</button>
-      <button data-act="probe" title="groups --probe: проверить права записи, закрыть непроходимые">🧹 Probe доступов</button>
-      <button data-act="privacy" title="максимальная конфиденциальность аккаунта (Nobody везде)">🔒 Приватность</button>
-      <button data-act="watch">👁 watch</button>
-      <button data-act="cloud" title="обновить облачное зеркало Supabase (агрегаты, без ников)">☁ зеркало</button>
+  <aside class="log-dock">
+    <div class="card">
+      <h2>Журнал</h2>
+      <div class="row" style="margin-bottom:8px">
+        <label><input type="checkbox" id="f_only_acc"> только выбранный аккаунт</label>
+        <label><input type="checkbox" id="autoscroll" checked> автопрокрутка</label>
+        <button type="button" class="quiet" id="clearLog" style="margin-left:auto">Очистить вид</button>
+      </div>
+      <div id="log"></div>
     </div>
-  </div>
-
-  <div class="card">
-    <h2>🖼 Медиа-библиотека (через «Избранное»)</h2>
-    <div class="row" style="margin-bottom:8px">
-      <input type="file" id="md_file" style="display:none" multiple>
-      <button id="md_pick">⬆ Загрузить файл(ы)</button>
-      <button id="md_pull">⇓ Pull из Избранного</button>
-      <button id="md_compare">⚖️ Сравнить с main</button>
-      <span class="l-dim" style="font-size:12px">загруженное и «Pull» оседают в Избранном аккаунта и в локальном кэше</span>
-    </div>
-    <div id="md_grid" class="mdgrid"></div>
-    <div class="l-dim" id="md_hint" style="font-size:12px;margin-top:6px">
-      нет медиа — загрузи файл или нажми Pull; ✗ = файл не в кэше (жми «sync» на плитке)
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Рассылка в группы (broadcast)</h2>
-    <textarea id="bc_text" placeholder="Текст сообщения…"></textarea>
-    <div class="row">
-      <label><input type="checkbox" id="bc_dry" checked> dry-run</label>
-      <label>пауза <input class="num" type="number" id="bc_lo" value="3">–<input class="num" type="number" id="bc_hi" value="8"> c</label>
-      <label>лимит <input class="num" type="number" id="bc_runs" placeholder="∞"></label>
-      <label>медиа <select id="bc_media" style="width:160px"><option value="">— без —</option></select></label>
-      <span style="flex:1"></span>
-      <button class="pri" id="bc_send">📨 Отправить</button>
-    </div>
-    <div class="l-dim" style="font-size:12px">ids — выделенные строки таблицы групп; аккаунт пишет только туда, где состоит; кросс-дедуп 24 ч</div>
-  </div>
-
-  <div class="card">
-    <h2>DM участникам (dmsend)</h2>
-    <textarea id="dm_text" placeholder="Текст личного сообщения… (добавь «ответь СТОП»)" style="min-height:56px"></textarea>
-    <div class="row">
-      <label><input type="checkbox" id="dm_dry" checked> dry-run</label>
-      <label>лимит <input class="num" type="number" id="dm_limit" value="10"></label>
-      <label>пауза <input class="num" type="number" id="dm_lo" value="20">–<input class="num" type="number" id="dm_hi" value="45"> c</label>
-      <label><input type="checkbox" id="dm_repeat"> repeat-ok</label>
-      <label>группа <select id="dm_group" style="width:160px"><option value="">все</option></select></label>
-      <label>медиа <select id="dm_media" style="width:160px"><option value="">— без —</option></select></label>
-      <span style="flex:1"></span>
-      <button class="pri" id="dm_send">📬 Отправить DM</button>
-    </div>
-    <div class="l-dim" style="font-size:12px">кросс-аккаунтная дедупликация: кому писал ЛЮБОЙ аккаунт — не повторит никто; дневной бюджет на аккаунт</div>
-  </div>
-
-  <div class="card">
-    <h2>🎼 Дирижёр — одна кампания на весь организм</h2>
-    <textarea id="cd_text" placeholder="Текст для всех целей… (dry по умолчанию)" style="min-height:56px"></textarea>
-    <div class="row">
-      <label>тип <select id="cd_kind" style="width:120px"><option value="broadcast">broadcast</option><option value="dm">dm</option></select></label>
-      <label><input type="checkbox" id="cd_dry" checked> dry-run</label>
-      <label>лимит <input class="num" type="number" id="cd_limit" value="20"></label>
-      <label>окно <input class="num" type="number" id="cd_window" value="6"> ч</label>
-      <label><input type="checkbox" id="cd_repeat"> repeat-ok</label>
-      <label>медиа <select id="cd_media" style="width:160px"><option value="">— без —</option></select></label>
-      <button class="pri" id="cd_send">🎼 Запустить дирижёра</button>
-    </div>
-    <div class="l-dim" style="font-size:12px;margin-top:6px">цели делятся между всеми включёнными аккаунтами; FloodWait одного — цель сразу подхватывает другой; DM-бюджеты на аккаунт; groups — только теми, кто в них состоит</div>
-  </div>
-
-  <div class="card">
-    <h2>Blacklist</h2>
-    <div class="row">
-      <input type="text" id="bl_value" placeholder="user_id или @ник" style="width:180px;margin:0">
-      <input type="text" id="bl_reason" placeholder="причина" style="width:160px;margin:0">
-      <button id="bl_add">＋ в blacklist</button>
-    </div>
-  </div>
+  </aside>
 </div>
-
-<div>
-  <div class="card">
-    <h2>Живой лог (все аккаунты; фильтр по выбранному)</h2>
-    <div class="row" style="margin-bottom:8px">
-      <label><input type="checkbox" id="f_only_acc"> только выбранный аккаунт</label>
-      <label><input type="checkbox" id="autoscroll" checked> автопрокрутка</label>
-      <button id="clearLog" style="margin-left:auto">очистить вид</button>
-    </div>
-    <div id="log"></div>
-  </div>
-
-  <div class="card">
-    <h2>Группы (<span id="gcount">0</span>)</h2>
-    <div class="tblwrap">
-      <table id="gtab">
-        <thead><tr><th></th><th>id</th><th>название</th><th>участн.</th><th>в рассылке</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-
-  <div class="card">
-    <h2>Последние кампании</h2>
-    <div class="tblwrap" style="max-height:170px">
-      <table id="ctab">
-        <thead><tr><th>#</th><th>тип</th><th>аккаунт</th><th>когда</th><th>ok</th><th>fail</th><th>текст</th></tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </div>
-</div>
-</main>
 <div id="md_box"><div id="md_host"></div><div class="mdcap" id="md_cap"></div></div>
 
 <script>
@@ -243,12 +389,20 @@ const $ = id => document.getElementById(id);
 const log = $('log');
 let state = null;
 const ACC_COLORS = {};
+const TOKEN_KEY = 'webToken';
 function accColor(name){
   if (!ACC_COLORS[name]) {
     const h = [...name].reduce((a,c)=>(a*31+c.charCodeAt(0))%360, 7);
-    ACC_COLORS[name] = `hsl(${h} 70% 65%)`;
+    ACC_COLORS[name] = `hsl(${h} 62% 64%)`;
   }
   return ACC_COLORS[name];
+}
+function webToken(){ return ($('webToken').value || '').trim(); }
+function authHeaders(json){
+  const headers = json ? {'Content-Type':'application/json'} : {};
+  const token = webToken();
+  if (token) headers['X-Web-Token'] = token;
+  return headers;
 }
 
 function addLog(ev){
@@ -287,13 +441,12 @@ async function refresh(){
   $('st_bl').textContent = s.blacklist;
   $('st_cov').textContent = `${s.writable_groups||0} пишут / ${s.covered_groups||0} покрыто / ${s.groups}`;
   { const cl = s.cloud_last, cj = s.jobs && s.jobs.cloud;
-    // части строки: 'ok'/'ошибка' — литералы, cl.at — ISO-дата из локального маркера cloud.py (фикс. формат); внешнего текста нет
-    $('cloudChip').innerHTML = cj ? '☁ <b class="st-run">push…</b>'
-      : cl ? `☁ ${cl.error?'<b style="color:var(--err)">ошибка</b>':'ok'} ${(cl.at||'').slice(11,16)}`
-      : '☁ не пушено'; }
+    $('cloudChip').innerHTML = '<span>Облако</span>' + (cj ? '<b class="st-run">push…</b>'
+      : cl ? `<b class="${cl.error ? 'st-flood' : ''}">${cl.error ? 'ошибка' : 'ok'} ${(cl.at||'').slice(11,16)}</b>`
+      : '<b>не пушено</b>'); }
   const cond = (s.jobs||{}).conductor;
-  $('condChip').innerHTML = cond ? `дирижёр: <b class="st-run">${esc(cond.name)} с ${esc((cond.started||'').slice(11,16))} UTC</b> <button class="danger" id="condStop" style="padding:1px 7px;font-size:11.5px">⏹</button>`
-                                 : 'дирижёр: <b>свободен</b>';
+  $('condChip').innerHTML = '<span>Дирижёр</span>' + (cond ? `<b class="st-run">${esc(cond.name)} с ${esc((cond.started||'').slice(11,16))} UTC</b> <button type="button" class="danger" id="condStop" style="padding:1px 7px;font-size:11.5px">стоп</button>`
+                                 : '<b>свободен</b>');
   const cstop = $('condStop'); if (cstop) cstop.onclick = () => stop('conductor');
   $('gcount').textContent = s.groups;
   renderMedia(s.media);
@@ -324,11 +477,10 @@ async function refresh(){
   const opt = $('dm_group'), optVal = opt.value;
   opt.innerHTML = '<option value="">все</option>';
   for (const g of s.group_rows){
-    // все строковые поля из БД проходят esc(); числа — из SQL COUNT/id
     const tr = document.createElement('tr');
     tr.innerHTML = `<td><input type="checkbox" value="${g.id}"></td>
       <td>${g.id}</td><td class="title" title="${esc(g.title)}">${esc(g.title)}</td>
-      <td>${g.members||0}</td><td>${g.in_broadcast?'✔':'—'}</td>`;
+      <td>${g.members||0}</td><td>${g.in_broadcast?'да':'—'}</td>`;
     if (checked.has(String(g.id))) tr.querySelector('input').checked = true;
     gtb.appendChild(tr);
     const o = document.createElement('option');
@@ -349,24 +501,24 @@ async function refresh(){
 
 async function run(body){
   const r = await fetch('/api/run', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+      headers: authHeaders(true), body: JSON.stringify(body)});
   const j = await r.json();
   if (j.error) addLog({type:'job', account: body.account||'*', text:'⚠ ' + j.error});
   setTimeout(refresh, 250);
 }
 async function fanout(action){
   const r = await fetch('/api/fanout', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({action})});
+      headers: authHeaders(true), body: JSON.stringify({action})});
   const j = await r.json();
   for (const [acc,res] of Object.entries(j.results||{}))
-    addLog({type:'job', account:acc, text:`🎭 fanout ${action}: ${res}`});
+    addLog({type:'job', account:acc, text:`fanout ${action}: ${res}`});
   setTimeout(refresh, 250);
 }
 async function stop(account){
   const r = await fetch('/api/stop', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body: JSON.stringify({account})});
+      headers: authHeaders(true), body: JSON.stringify({account})});
   const j = await r.json();
-  if (j.error || !j.ok) addLog({type:'job', account: account||'*', text:'⚠ нечего останавливать'});
+  if (j.error || !j.ok) addLog({type:'job', account: account||'*', text:'⚠ ' + (j.error || 'нечего останавливать')});
   setTimeout(refresh, 500);
 }
 document.querySelectorAll('button[data-act]').forEach(b => b.onclick = () => {
@@ -409,15 +561,13 @@ $('btnStopAll').onclick = () => stop('all');
 $('clearLog').onclick = () => log.innerHTML = '';
 $('btnAccList').onclick = refresh;
 
-// ---------- медиа-библиотека («Избранное» как хранилище, кэш на диске) ----------
-// все строковые поля проходят esc(); id/size — числа из SQLite
 function mediaOpt(m){
-  return `<option value="${m.id}">#${m.id} ${esc((m.title||'').slice(0,16))}${m.ok?'':' ✗'}</option>`;
+  return `<option value="${m.id}">#${m.id} ${esc((m.title||'').slice(0,16))}${m.ok?'':' нет'}</option>`;
 }
 let lastMediaSig = "";
 function renderMedia(list){
   const sig = JSON.stringify(list || []);
-  if (sig === lastMediaSig) return;   // библиотека не менялась — не трогаем сетку (клики живые)
+  if (sig === lastMediaSig) return;
   lastMediaSig = sig;
   for (const id of ['bc_media','dm_media','cd_media']){
     const sel = $(id), keep = sel.value;
@@ -432,36 +582,37 @@ function renderMedia(list){
     const thumb = m.ok
       ? (m.kind==='photo' ? `<img class="mdthumb" loading="lazy" src="${src}" alt="">`
         : m.kind==='video' ? `<video class="mdthumb" src="${src}#t=0.4" preload="metadata" muted></video>`
-        : `<div class="mdthumb" style="display:flex;align-items:center;justify-content:center;font-size:30px">📎</div>`)
-      : `<div class="mdthumb" style="display:flex;align-items:center;justify-content:center;color:var(--err)">✗ кэш</div>`;
+        : `<div class="mdthumb" style="display:flex;align-items:center;justify-content:center">файл</div>`)
+      : `<div class="mdthumb" style="display:flex;align-items:center;justify-content:center;color:var(--err)">нет кэша</div>`;
     t.innerHTML = `<div style="position:relative">${thumb}<span class="badge mdbg">${esc(m.kind)}</span></div>
       <div title="${esc(m.title)}">${esc((m.title||'').slice(0,24))} · ${(m.size/1048576).toFixed(1)} МБ</div>
       <div class="mdrow">
-        <button data-a="play" ${m.ok?'':'disabled'}>▶</button>
-        <button data-a="use" ${m.ok?'':'disabled'}>📎</button>
-        <button data-a="sync" title="подтянуть файл из Избранного в кэш">⇩</button>
-        <button data-a="del" class="danger" title="убрать из библиотеки">✕</button>
+        <button data-a="play" ${m.ok?'':'disabled'}>смотр</button>
+        <button data-a="use" ${m.ok?'':'disabled'}>взять</button>
+        <button data-a="sync" title="подтянуть файл из Избранного в кэш">кэш</button>
+        <button data-a="del" class="danger" title="убрать из библиотеки">убрать</button>
       </div>`;
     t.querySelectorAll('button').forEach(b => b.onclick = () => {
       const a = b.dataset.a;
       if (a==='play') openMdb(m);
       else if (a==='use'){ for (const s of ['bc_media','dm_media','cd_media']) $(s).value = String(m.id);
-        addLog({type:'job', text:`📎 медиа #${m.id} выбрано во все формы кампаний`}); }
+        addLog({type:'job', text:`медиа #${m.id} выбрано во все формы кампаний`}); }
       else if (a==='sync') run({action:'media', op:'sync', value:String(m.id), account: m.account});
       else if (a==='del') run({action:'media', op:'del', value:String(m.id)});
     });
-    t.querySelector('.mdthumb').onclick = () => openMdb(m);
+    const thumbEl = t.querySelector('.mdthumb');
+    if (thumbEl) thumbEl.onclick = () => openMdb(m);
     g.appendChild(t);
   });
   $('md_hint').textContent = (list&&list.length)
-    ? `в библиотеке: ${list.length} (${list.filter(m=>!m.ok).length} без кэша — «⇩» скачает обратно из Избранного)`
-    : 'пусто: загрузи файл (⬆) или возьми из «Избранного» (⇓ Pull)';
+    ? `в библиотеке: ${list.length} (${list.filter(m=>!m.ok).length} без кэша — «кэш» скачает обратно из Избранного)`
+    : 'пусто: загрузи файл или возьми из «Избранного»';
 }
 function openMdb(m){
   const host = $('md_host');
   host.innerHTML = m.kind==='video' ? `<video src="/api/media/${m.id}/file" controls autoplay muted playsinline></video>`
     : m.kind==='photo' ? `<img src="/api/media/${m.id}/file" alt="">`
-    : `<div class="mdcap"><a href="/api/media/${m.id}/file" download>📎 ${esc(m.title)}</a> — скачать файл</div>`;
+    : `<div class="mdcap"><a href="/api/media/${m.id}/file" download>${esc(m.title)}</a> — скачать файл</div>`;
   $('md_cap').textContent = `#${m.id} · ${m.kind} · ${(m.size/1048576).toFixed(1)} МБ · Избранное «${m.account}» (msg ${m.msg_id})`;
   $('md_box').style.display = 'flex';
 }
@@ -474,11 +625,11 @@ $('md_file').onchange = async () => {
   for (const f of $('md_file').files){
     const fd = new FormData();
     fd.append('file', f); fd.append('account', $('accSel').value || 'main');
-    addLog({type:'job', text:`⬆ загрузка ${f.name} (${(f.size/1048576).toFixed(1)} МБ) → Избранное…`});
+    addLog({type:'job', text:`загрузка ${f.name} (${(f.size/1048576).toFixed(1)} МБ) → Избранное…`});
     try{
-      const r = await fetch('/api/media/upload', {method:'POST', body: fd});
+      const r = await fetch('/api/media/upload', {method:'POST', body: fd, headers: authHeaders(false)});
       const j = await r.json();
-      addLog({type:'job', text: j.error ? `⚠ upload: ${j.error}` : `⬆ ${f.name}: media add запущен`});
+      addLog({type:'job', text: j.error ? `⚠ upload: ${j.error}` : `${f.name}: media add запущен`});
     }catch(e){ addLog({type:'job', text:`⚠ upload: ${e}`}); }
   }
   $('md_file').value = '';
@@ -487,7 +638,24 @@ $('md_file').onchange = async () => {
 $('md_pull').onclick = () => run({action:'media', op:'pull', account: $('accSel').value || 'main', limit: 50});
 $('md_compare').onclick = () => run({action:'compare', account: $('accSel').value || 'work2', other: 'main'});
 
-// SSE живой лог; дедуп по seq, сброс при смене boot (перезапуск сервера)
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.onclick = () => {
+    document.querySelectorAll('.tab').forEach(item => item.classList.toggle('on', item === tab));
+    document.querySelectorAll('.view').forEach(view => view.classList.toggle('on', view.dataset.view === tab.dataset.tab));
+  };
+});
+function armSend(checkId, buttonId, liveLabel){
+  const box = $(checkId), button = $(buttonId);
+  const paint = () => { button.textContent = box.checked ? 'Проверить' : liveLabel; };
+  box.addEventListener('change', paint);
+  paint();
+}
+armSend('bc_dry', 'bc_send', 'Отправить');
+armSend('dm_dry', 'dm_send', 'Отправить DM');
+armSend('cd_dry', 'cd_send', 'Запустить');
+$('webToken').value = sessionStorage.getItem(TOKEN_KEY) || '';
+$('webToken').addEventListener('input', () => sessionStorage.setItem(TOKEN_KEY, webToken()));
+
 let lastSeq = 0, lastBoot = null;
 function connect(){
   const es = new EventSource('/api/stream');
