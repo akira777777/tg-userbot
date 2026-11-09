@@ -327,12 +327,45 @@ async def cmd_watch(args):
     await client.run_until_disconnected()
 
 
+def username_is_bot(username):
+    """Ник Telegram-бота обязан заканчиваться на bot. Имена вроде Subbotina и Rabota — нет."""
+    return bool(username) and str(username).lower().endswith("bot")
+
+
+def member_is_bot(u):
+    return int(bool(getattr(u, "bot", False)) or username_is_bot(getattr(u, "username", None)))
+
+
+def dm_eligible_where(repeat_ok=False):
+    """Предикат очереди новых DM. repeat_ok снимает только дедуп прошлых успешных DM."""
+    parts = [
+        "m.is_bot=0",
+        "LOWER(COALESCE(m.username, '')) NOT LIKE '%bot'",
+        "m.user_id NOT IN (SELECT user_id FROM blacklist)",
+    ]
+    if not repeat_ok:
+        parts.append(
+            "m.user_id NOT IN (SELECT CAST(s.target AS INTEGER) FROM sent s "
+            "JOIN campaigns c ON c.id=s.campaign WHERE c.kind='dm' AND s.status='ok')"
+        )
+    return " AND ".join(parts)
+
+
+# Тот же предикат, что у dmsend по умолчанию: status и панель считают одну очередь.
+DM_ELIGIBLE_WHERE = dm_eligible_where(False)
+
+
 def save_member(conn, u, gid):
+    uname = u.username or ""
+    is_bot = member_is_bot(u)
     cur = conn.execute(
         "INSERT OR IGNORE INTO members(user_id,username,first_name,last_name,is_bot,collected_at,source_group) "
         "VALUES(?,?,?,?,?,?,?)",
-        (u.id, u.username or "", u.first_name or "", u.last_name or "",
-         int(bool(getattr(u, "bot", False))), now_iso(), gid))
+        (u.id, uname, u.first_name or "", u.last_name or "", is_bot, now_iso(), gid))
+    # INSERT OR IGNORE не обновляет уже существующую строку — иначе ник *bot
+    # навсегда остаётся is_bot=0, если первый scrape записал его человеком.
+    if is_bot:
+        conn.execute("UPDATE members SET is_bot=1 WHERE user_id=? AND is_bot=0", (u.id,))
     conn.execute("INSERT OR IGNORE INTO member_sources(user_id,group_id) VALUES(?,?)", (u.id, gid))
     return cur.rowcount
 
@@ -388,16 +421,16 @@ async def cmd_scrape(args):
 
 
 def dm_targets(conn, group_id=None, repeat_ok=False, limit=None):
-    """Утиный выбор: боты, blacklist и получатели прошлых DM-кампаний исключены."""
-    q = ("SELECT m.* FROM members m WHERE m.is_bot=0 "
-         "AND m.user_id NOT IN (SELECT user_id FROM blacklist)")
+    """Очередь DM: боты (флаг и ник *bot), blacklist и получатели прошлых DM исключены.
+
+    Пустые профили (нет ника и имени) остаются в очереди: это не боты.
+    Имена людей, внутри которых есть буквы bot (Subbotina, Rabota), не отсекаются.
+    """
+    q = f"SELECT m.* FROM members m WHERE {dm_eligible_where(repeat_ok)}"
     p = []
     if group_id:
         q += " AND m.user_id IN (SELECT user_id FROM member_sources WHERE group_id=?)"
         p.append(group_id)
-    if not repeat_ok:
-        q += (" AND m.user_id NOT IN (SELECT CAST(s.target AS INTEGER) FROM sent s "
-              "JOIN campaigns c ON c.id=s.campaign WHERE c.kind='dm' AND s.status='ok')")
     q += " ORDER BY m.collected_at"
     if limit:
         q += " LIMIT ?"
@@ -1094,10 +1127,7 @@ def cmd_status(args):
                           "ORDER BY s.ts DESC LIMIT 5"):
         print(f"    #{s['campaign']} {s['kind']} -> {s['target']}: {s['status']} ({s['ts']})")
     free = conn.execute(
-        "SELECT COUNT(*) c FROM members m WHERE m.is_bot=0 AND m.user_id "
-        "NOT IN (SELECT user_id FROM blacklist) AND m.user_id NOT IN "
-        "(SELECT CAST(s.target AS INTEGER) FROM sent s JOIN campaigns c ON c.id=s.campaign "
-        "WHERE c.kind='dm' AND s.status='ok')").fetchone()["c"]
+        f"SELECT COUNT(*) c FROM members m WHERE {DM_ELIGIBLE_WHERE}").fetchone()["c"]
     print(f"  доступных для новых DM: {free}")
 
 

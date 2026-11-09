@@ -1,9 +1,9 @@
 """CLI точки входа для контрольной плоскости Mini App.
 
 Режимы:
-  python -m control main telegram-bot   — Bot API контроллер (/start -> WebApp)
-  python -m control main worker         — локальный воркер очереди команд
-  python -m control main healthcheck    — проверка работоспособности
+  python -m control.main telegram-bot   — Bot API контроллер (/start -> WebApp)
+  python -m control.main worker         — локальный воркер очереди команд
+  python -m control.main healthcheck    — проверка работоспособности
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ def healthcheck() -> int:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print("Использование: python -m control main <telegram-bot|worker|healthcheck>")
+        print("Использование: python -m control.main <telegram-bot|worker|healthcheck>")
         sys.exit(2)
 
     mode = sys.argv[1]

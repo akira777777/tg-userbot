@@ -108,6 +108,61 @@ def test_dm_targeting(seeded_db):
     assert tg == []
 
 
+class _User:
+    def __init__(self, uid, username, is_bot=False, first="", last=""):
+        self.id = uid
+        self.username = username
+        self.bot = is_bot
+        self.first_name = first
+        self.last_name = last
+
+
+def test_dm_skips_bot_usernames_keeps_humans_and_blanks(seeded_db):
+    """Ник, оканчивающийся на bot, не попадает в DM, даже если is_bot=0.
+
+    Subbotina / Rabota и пустые профили остаются. Повторный save_member
+    поднимает is_bot у уже существующей строки (INSERT OR IGNORE сам этого не делает).
+    """
+    conn = seeded_db
+    rows = [
+        (6, "Dokument2_bot", "Doc", "", 0),
+        (8, "Subbotina", "Анна", "Субботина", 0),
+        (9, "Rabota", "Иван", "", 0),
+        (10, "", "", "", 0),
+        (12, "HelperBOT", "X", "", 0),
+    ]
+    for uid, un, first, last, botf in rows:
+        conn.execute(
+            "INSERT INTO members(user_id,username,first_name,last_name,is_bot,collected_at,source_group) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (uid, un, first, last, botf, bot.now_iso(), 101),
+        )
+    conn.commit()
+    ids = {r["user_id"] for r in bot.dm_targets(conn)}
+    assert 6 not in ids and 12 not in ids, ids
+    assert {1, 2, 4, 8, 9, 10} <= ids, ids
+    free = conn.execute(
+        f"SELECT COUNT(*) c FROM members m WHERE {bot.DM_ELIGIBLE_WHERE}"
+    ).fetchone()["c"]
+    assert free == len(bot.dm_targets(conn))
+
+    assert bot.save_member(conn, _User(6, "Dokument2_bot"), 101) == 0
+    conn.commit()
+    flag = conn.execute("SELECT is_bot FROM members WHERE user_id=6").fetchone()["is_bot"]
+    assert flag == 1, flag
+
+    assert bot.save_member(conn, _User(11, "fresh_bot", first="Bot"), 101) == 1
+    conn.commit()
+    row = conn.execute(
+        "SELECT is_bot, first_name FROM members WHERE user_id=11"
+    ).fetchone()
+    assert row["is_bot"] == 1 and row["first_name"] == "Bot"
+    assert 11 not in {r["user_id"] for r in bot.dm_targets(conn)}
+    assert bot.username_is_bot("Subbotina") is False
+    assert bot.username_is_bot("rabota") is False
+    assert bot.username_is_bot("cryptoaml_chek_bot") is True
+
+
 def test_blacklist_resolution_and_dm_filtering(seeded_db):
     """Blacklist by nick resolves to real id and removes user from dm_targets."""
     conn = seeded_db
