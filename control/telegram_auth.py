@@ -28,7 +28,7 @@ class TelegramIdentity:
     query_id: str | None
 
 
-def verify_init_data(  # noqa: C901
+def verify_init_data(
     init_data: str,
     bot_token: str,
     *,

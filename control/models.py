@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from enum import Enum
-from typing import Literal
+from enum import StrEnum
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-class CommandKind(str, Enum):
+class CommandKind(StrEnum):
     STATUS = "STATUS"
     GROUPS = "GROUPS"
     CAMPAIGNS = "CAMPAIGNS"
@@ -23,13 +23,13 @@ class CommandKind(str, Enum):
     STOP = "STOP"
 
 
-class CommandMode(str, Enum):
+class CommandMode(StrEnum):
     READ = "READ"
     DRY_RUN = "DRY_RUN"
     LIVE = "LIVE"
 
 
-class CommandStatus(str, Enum):
+class CommandStatus(StrEnum):
     PENDING = "PENDING"
     CLAIMED = "CLAIMED"
     RUNNING = "RUNNING"
@@ -39,7 +39,7 @@ class CommandStatus(str, Enum):
     EXPIRED = "EXPIRED"
 
 
-class ForwardPrivacyMode(str, Enum):
+class ForwardPrivacyMode(StrEnum):
     DISABLED = "disabled"
     STRIP_ATTRIBUTION = "strip"
     SEND_COPY = "send_copy"
@@ -134,11 +134,16 @@ class CommandPayload(BaseModel):
 
     @model_validator(mode="after")
     def _confirmation_required_for_live(self) -> CommandPayload:
-        if self.mode == CommandMode.LIVE and self.kind in (
-            CommandKind.BROADCAST,
-            CommandKind.DMSEND,
-            CommandKind.CONDUCT,
-        ) and not self.confirmation_nonce:
+        if (
+            self.mode == CommandMode.LIVE
+            and self.kind
+            in (
+                CommandKind.BROADCAST,
+                CommandKind.DMSEND,
+                CommandKind.CONDUCT,
+            )
+            and not self.confirmation_nonce
+        ):
             raise ValueError("LIVE режим требует confirmation_nonce")
         return self
 
@@ -199,4 +204,4 @@ class ValidatedCommand(BaseModel):
 
     identity: TelegramIdentity
     request: CommandPayload
-    validated: dict
+    validated: dict[str, Any]
