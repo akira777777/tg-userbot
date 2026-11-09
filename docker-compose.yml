@@ -1,171 +1,33 @@
-# docker-compose.yml — оркестрация стека (app + db + redis)
-# Версии образов фиксированы для репродуцируемости
-# В продакшене используйте docker-compose.prod.yml с autoscaling
+# Локальный стек: панель и SQLite. Postgres/Redis/Grafana здесь нет.
+# Mini App (worker + controller) — docker-compose.prod.yml, только с реальными
+# MINI_APP_URL, OWNER_TELEGRAM_IDS, BOT_TOKEN, CONTROL_SESSION_SECRET (без запасных URL).
 
 services:
-  # ───── БАЗА ДАННЫХ (PostgreSQL 16) ─────
-  db:
-    image: postgres:16-alpine
-    container_name: tg-userbot-db
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: tg_userbot
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-supersecret_password_change_me}
-      POSTGRES_DB: tg_userbot_db
-    volumes:
-      - db_data:/var/lib/postgresql/data
-      - ./supabase/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tg_userbot -d tg_userbot_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  # ───── REDIS (кеширование, rate-limiting) ─────
-  redis:
-    image: redis:7-alpine
-    container_name: tg-userbot-redis
-    restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    volumes:
-      - redis_data:/data
-    ports:
-      - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 3s
-      timeout: 3s
-      retries: 5
-
-  # ───── ПРИЛОЖЕНИЕ (FastAPI + uvicorn) ─────
-  app:
+  web:
     build:
       context: .
-      target: prod
       dockerfile: Dockerfile
-    container_name: tg-userbot-app
-    restart: unless-stopped
+    image: tg-userbot:latest
+    container_name: tg-userbot-web
+    command: ["web"]
+    ports:
+      - "8642:8642"
     environment:
-      - TZ=Europe/Moscow
-      - TG_BOT_TOKEN=${TG_BOT_TOKEN:-}
-      - SUPABASE_URL=${SUPABASE_URL:-https://your-project.supabase.co}
-      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY:-}
-      - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY:-}
-      - REDIS_URL=redis://redis:6379/0
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_USER=tg_userbot
-      - DB_PASSWORD=${DB_PASSWORD:-supersecret_password_change_me}
-      - DB_NAME=tg_userbot_db
-      - DASHBOARD_URL=${DASHBOARD_URL:-https://dashboard.tg-userbot.dev}
-      - TG_CHANNEL_ID=${TG_CHANNEL_ID:-}
-      - TG_GROUP_ID=${TG_GROUP_ID:-}
-      - TG_ADMIN_ID=${TG_ADMIN_ID:-}
-      - WORKERS=4
-    ports:
-      - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - PYTHONUNBUFFERED=1
+      - WEBBOT_HOST=0.0.0.0
+      - WEBBOT_PORT=8642
+      - USERBOT_DB=/app/data/userbot.db
+      - USERBOT_SESSIONS=/app/sessions
+      - USERBOT_MEDIA=/app/media_cache
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
     volumes:
-      - ./src:/app/src:ro
-      - ./static:/app/static:ro
-      - ./dashboard:/app/dashboard:ro
-    networks:
-      - tg-userbot-network
-
-  # ───── МЕДИА-БИБЛИОТЕКА (опционально, для хранения файлов) ─────
-  media:
-    image: alpine:latest
-    container_name: tg-userbot-media
-    restart: unless-stopped
-    volumes:
-      - media_storage:/media
-    networks:
-      - tg-userbot-network
-
-  # ───── MONITORING (Prometheus + Grafana) ─────
-  prometheus:
-    image: prom/prometheus:v2.55.0
-    container_name: tg-userbot-prometheus
-    restart: unless-stopped
-    volumes:
-      - prometheus_data:/prometheus
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-    ports:
-      - "9090:9090"
-    networks:
-      - tg-userbot-network
-
-  grafana:
-    image: grafana/grafana:11.0.0
-    container_name: tg-userbot-grafana
-    restart: unless-stopped
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
-    ports:
-      - "3000:3000"
-    networks:
-      - tg-userbot-network
-
-  # ───── TELEGRAM WEBHOOK (для Webhook-режима) ─────
-  telegram-webhook:
-    image: python:3.12-slim-bookworm
-    container_name: tg-userbot-webhook
-    restart: unless-stopped
-    volumes:
-      - ./src:/app/src:ro
-    working_dir: /app
-    command:
-      - python
-      - -m
-      - uvicorn
-      - src.tg_userbot.main:app
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
-    environment:
-      - TG_BOT_TOKEN=${TG_BOT_TOKEN:-}
-      - WEBHOOK_URL=https://your-domain.com/webhook
-    ports:
-      - "8080:8080"
-    depends_on:
-      - app
-    networks:
-      - tg-userbot-network
-
-# ==================== NETWORKS & VOLUMES ====================
-networks:
-  tg-userbot-network:
-    driver: bridge
-
-volumes:
-  db_data:
-    driver: local
-  redis_data:
-    driver: local
-  media_storage:
-    driver: local
-  prometheus_data:
-    driver: local
-  grafana_data:
-    driver: local
-
-# ==================== ПРОДАКШЕН (автоскейлинг, без dev-зависимостей) ====================
-# docker-compose.prod.yml — отдельный файл для продакшена:
-# - без dev-зависимостей
-# - с autoscaling (Helm)
-# - с мониторингом (Prometheus + Grafana)
-# - с логированием (ELK)
+      - ./userbot.db:/app/data/userbot.db
+      - ./sessions:/app/sessions
+      - ./media_cache:/app/media_cache
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/api/state')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

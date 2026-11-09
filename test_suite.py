@@ -371,6 +371,16 @@ def test_broadcast_cap_and_group_flags(seeded_db):
     bot.refresh_group_flags(conn, 101, "channel_subscriber")
     row = conn.execute("SELECT in_broadcast, skip_reason FROM groups WHERE id=101").fetchone()
     assert row["in_broadcast"] == 0 and row["skip_reason"] == "channel_subscriber", dict(row)
+    conn.execute("UPDATE groups SET skip_reason='' WHERE id=101")
+    conn.execute("UPDATE account_groups SET can_write=1 WHERE group_id=101")
+    conn.commit()
+    stale = conn.execute(
+        "SELECT COUNT(*) c FROM groups g WHERE COALESCE(g.in_broadcast, 0)=0 "
+        "AND COALESCE(g.skip_reason, '')='' "
+        "AND EXISTS (SELECT 1 FROM account_groups ag "
+        " WHERE ag.group_id=g.id AND ag.can_write=1)"
+    ).fetchone()["c"]
+    assert stale == 1
 
 
 def test_save_member_stores_address_and_deleted(seeded_db):

@@ -1,117 +1,32 @@
-.PHONY: help install dev test lint format docs build run clean
+# Реальные цели: bot.py, web.py, pytest, dashboard.
+# Не вызывает FastAPI, gunicorn, alembic и несуществующий пакет src.tg_userbot.
+PYTHON ?= .venv/Scripts/python.exe
+ifeq ($(OS),Windows_NT)
+  PYTHON := .venv/Scripts/python.exe
+else
+  PYTHON := .venv/bin/python
+endif
 
-## ============ ПОМОЩЬ ============
+.PHONY: help status web test dashboard-test
+
 help:
-	@echo "=== tg-userbot — Makefile ==="
-	@echo ""
-	@echo "Основные команды:"
-	@echo "  make install     — установить зависимости (pip install -e '.[dev]')"
-	@echo "  make dev         — запуск отладочного сервера (fastapi dev src/tg_userbot/main:app)"
-	@echo "  make test        — запуск тестов (pytest tests/ -v --cov)"
-	@echo "  make lint        — линтинг (ruff check src/tg_userbot)"
-	@echo "  make format      — форматирование (black src/ ruff format src/)"
-	@echo "  make docs        — сборка документации (mkdocs serve)"
-	@echo "  make build       — сборка проекта (python -m build)"
-	@echo "  make run         — запуск в production (gunicorn src/tg_userbot.main:app)"
-	@echo "  make clean       — очистка кэша (rm -rf .venv dist/ build/ .eggs/)"
-	@echo ""
-	@echo "Команды тестирования:"
-	@echo "  make test-cov    — тесты с покрытием (pytest tests/ -v --cov)"
-	@echo "  make test-fast   — быстрый тест (pytest tests/ -v -x -k 'fast')"
-	@echo ""
-	@echo "Команды разработки:"
-	@echo "  make lint        — линтинг (ruff check src/)"
-	@echo "  make format      — форматирование (black src/ ruff format src/)"
-	@echo "  make docs        — документация (mkdocs serve)"
-	@echo ""
-	@echo "Команды деплоя:"
-	@echo "  make docker-build    — сборка Docker-образа"
-	@echo "  make docker-run      — запуск в Docker"
-	@echo "  make docker-up       — запуск docker-compose"
-	@echo "  make docker-down     — остановка docker-compose"
-	@echo ""
-	@echo "Команды БД:"
-	@echo "  make db-up          — запуск БД (docker-compose -f docker-compose.db.yml up)"
-	@echo "  make db-migrate     — миграция БД (alembic upgrade head)"
-	@echo "  make db-seed        — заполнение тестовыми данными"
-	@echo "  make db-clean       — сброс БД (alembic downgrade -1)"
-	@echo ""
-	@echo "Команды чистки:"
-	@echo "  make clean          — очистка кэша (.venv, dist/, build/, .eggs/)"
-	@echo "  make clean-all      — полная очистка (.venv, htmlcov/, .coverage, *.egg-info)"
+	@echo tg-userbot
+	@echo   make status          — bot.py status (только база)
+	@echo   make web             — панель web.py
+	@echo   make test            — pytest (без живой панели и Telegram)
+	@echo   make dashboard-test  — vitest дашборда
+	@echo Запуск: $(PYTHON) bot.py <команда>
+	@echo Docker: docker compose -f docker-compose.yml up web
+	@echo Не используйте docker-compose.yml старого FastAPI-стека — его больше нет.
 
-## ============ ОСНОВНЫЕ КОМАНДЫ ============
-install:
-	pip install -e ".[dev]"
-	black src/ tests/
-	ruff check src/ tests/ --fix
+status:
+	$(PYTHON) bot.py status
 
-dev:
-	fastapi dev src/tg_userbot/main:app --reload
+web:
+	$(PYTHON) web.py
 
 test:
-	pytest tests/ -v --cov
+	$(PYTHON) -m pytest -q --tb=short -p no:cacheprovider
 
-test-cov:
-	pytest tests/ -v --cov --cov-report=html --cov-report=term-missing
-
-test-fast:
-	pytest tests/ -v -x -k "fast"
-
-lint:
-	ruff check src/ tests/
-	mypy src/
-
-format:
-	black src/ tests/
-	ruff format src/ tests/
-
-docs:
-	mkdocs serve
-
-build:
-	python -m build
-
-run:
-	gunicorn -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 src/tg_userbot.main:app
-
-clean:
-	rm -rf .venv dist/ build/ .eggs/ *.egg-info
-
-clean-all:
-	rm -rf .venv htmlcov/ .coverage .pytest_cache/ __pycache__ */__pycache__ */*/__pycache__ dist/ build/ *.egg-info
-
-## ============ DOCKER ============
-docker-build:
-	docker build -t tg-userbot:latest .
-
-docker-run:
-	docker run -d --name tg-userbot \
-		-p 8000:8000 \
-		-e TG_BOT_TOKEN=$(cat .env | grep TG_BOT_TOKEN | cut -d'=' -f2) \
-		-e SUPABASE_URL=$(cat .env | grep SUPABASE_URL | cut -d'=' -f2) \
-		-e SUPABASE_ANON_KEY=$(cat .env | grep SUPABASE_ANON_KEY | cut -d'=' -f2) \
-		tg-userbot:latest
-
-docker-up:
-	docker-compose up -d
-
-docker-down:
-	docker-compose down
-
-## ============ БАЗА ДАННЫХ ============
-db-up:
-	docker-compose -f docker-compose.db.yml up -d
-
-db-migrate:
-	alembic upgrade head
-
-db-seed:
-	python scripts/db-seed.py
-
-db-clean:
-	alembic downgrade -1
-
-## ============ ВЕРСИОНирование ============
-version:
-	@echo "Версия проекта: $(shell git describe --tags --always --dirty=+)"
+dashboard-test:
+	npm --prefix dashboard test

@@ -1480,6 +1480,14 @@ def cmd_status(args):
         print("    нет")
     for r in outside:
         print(f"    {r['c']:>5}  {REASON_RU.get(r['reason'], r['reason'])}")
+    stale = conn.execute(
+        "SELECT COUNT(*) c FROM groups g WHERE COALESCE(g.in_broadcast, 0)=0 "
+        "AND COALESCE(g.skip_reason, '')='' "
+        "AND EXISTS (SELECT 1 FROM account_groups ag "
+        " WHERE ag.group_id=g.id AND ag.can_write=1)").fetchone()["c"]
+    if stale:
+        print(f"    {stale} из них с пустой причиной, но can_write=1 у аккаунта — "
+              f"в рассылку сами не вернутся; перепроверь: bot.py groups --probe --keep")
     print("  участники вне очереди DM:")
     buckets = conn.execute(
         "SELECT reason, COUNT(*) c FROM ("

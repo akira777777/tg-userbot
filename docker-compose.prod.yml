@@ -1,292 +1,88 @@
-# ==============================================================================
-# Production Docker Compose Configuration for tg-userbot
-# Services:
-#   - db: PostgreSQL 16 Alpine
-#   - redis: Redis 7 Alpine
-#   - userbot_worker: Mini App Queue Processor (control.main worker)
-#   - controller_bot: Telegram Bot API Controller (control.main telegram-bot)
-#   - web: Management Web Panel & Log Streamer (web.py)
-# ==============================================================================
+# Mini App + панель. SQLite, без Postgres/Redis.
+# Запускать только если в окружении заданы настоящие:
+#   BOT_TOKEN, MINI_APP_URL, OWNER_TELEGRAM_IDS, CONTROL_SESSION_SECRET
+# Запасных URL и чужих telegram id здесь нет: healthcheck должен падать, пока их нет.
 
 services:
-  # ───── POSTGRESQL 16 DATABASE ─────
-  db:
-    image: postgres:16-alpine
-    container_name: tg-userbot-db
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-tg_userbot}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-tg_userbot_secure_password}
-      POSTGRES_DB: ${POSTGRES_DB:-tg_userbot_db}
-      PGDATA: /var/lib/postgresql/data/pgdata
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./supabase/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-tg_userbot} -d $${POSTGRES_DB:-tg_userbot_db}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-      start_period: 5s
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "20m"
-        max-file: "5"
-
-  # ───── REDIS 7 IN-MEMORY CACHE & BROKER ─────
-  redis:
-    image: redis:7-alpine
-    container_name: tg-userbot-redis
-    restart: unless-stopped
-    deploy:
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 3s
-      timeout: 3s
-      retries: 5
-      start_period: 3s
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ───── USERBOT COMMAND WORKER (BACKGROUND CONSUMER) ─────
   userbot_worker:
     build:
       context: .
       dockerfile: Dockerfile
     image: tg-userbot:latest
     container_name: tg-userbot-worker
+    command: ["worker"]
     restart: unless-stopped
-    command: ["python", "-m", "control.main", "worker"]
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 5
-        window: 120s
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 128M
     environment:
-      - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1
-      - BOT_TOKEN=${BOT_TOKEN:-${TG_BOT_TOKEN:-}}
-      - MINI_APP_URL=${MINI_APP_URL:-${DASHBOARD_URL:-https://your-app.vercel.app}}
-      - OWNER_TELEGRAM_IDS=${OWNER_TELEGRAM_IDS:-${TG_ADMIN_ID:-123456789}}
-      - CONTROL_SESSION_SECRET=${CONTROL_SESSION_SECRET:-change-me-in-production}
+      - BOT_TOKEN=${BOT_TOKEN:?set BOT_TOKEN}
+      - MINI_APP_URL=${MINI_APP_URL:?set MINI_APP_URL https}
+      - OWNER_TELEGRAM_IDS=${OWNER_TELEGRAM_IDS:?set OWNER_TELEGRAM_IDS}
+      - CONTROL_SESSION_SECRET=${CONTROL_SESSION_SECRET:?set CONTROL_SESSION_SECRET}
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY:-}
-      - WORKER_ID=${WORKER_ID:-worker-1}
-      - POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-2.0}
-      - LEASE_SECONDS=${LEASE_SECONDS:-300}
-      - CLAIM_BATCH_SIZE=${CLAIM_BATCH_SIZE:-5}
-      - FORWARD_PRIVACY=${FORWARD_PRIVACY:-1}
       - USERBOT_DB=/app/data/userbot.db
       - USERBOT_SESSIONS=/app/sessions
       - USERBOT_MEDIA=/app/media_cache
-      - API_ID=${API_ID:-}
-      - API_HASH=${API_HASH:-}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_USER=${POSTGRES_USER:-tg_userbot}
-      - DB_PASSWORD=${DB_PASSWORD:-tg_userbot_secure_password}
-      - DB_NAME=${POSTGRES_DB:-tg_userbot_db}
-      - REDIS_URL=redis://redis:6379/0
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
     volumes:
       - userbot_sessions:/app/sessions
       - userbot_data:/app/data
       - userbot_media:/app/media_cache
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-m", "control.main", "healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # ───── TELEGRAM BOT CONTROLLER (TELEGRAM BOT API /START) ─────
   controller_bot:
     build:
       context: .
       dockerfile: Dockerfile
     image: tg-userbot:latest
     container_name: tg-userbot-controller
+    command: ["controller"]
     restart: unless-stopped
-    command: ["python", "-m", "control.main", "telegram-bot"]
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 5
-        window: 120s
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.1'
-          memory: 64M
     environment:
-      - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1
-      - BOT_TOKEN=${BOT_TOKEN:-${TG_BOT_TOKEN:-}}
-      - MINI_APP_URL=${MINI_APP_URL:-${DASHBOARD_URL:-https://your-app.vercel.app}}
-      - OWNER_TELEGRAM_IDS=${OWNER_TELEGRAM_IDS:-${TG_ADMIN_ID:-123456789}}
-      - CONTROL_SESSION_SECRET=${CONTROL_SESSION_SECRET:-change-me-in-production}
+      - BOT_TOKEN=${BOT_TOKEN:?set BOT_TOKEN}
+      - MINI_APP_URL=${MINI_APP_URL:?set MINI_APP_URL https}
+      - OWNER_TELEGRAM_IDS=${OWNER_TELEGRAM_IDS:?set OWNER_TELEGRAM_IDS}
+      - CONTROL_SESSION_SECRET=${CONTROL_SESSION_SECRET:?set CONTROL_SESSION_SECRET}
       - SUPABASE_URL=${SUPABASE_URL:-}
       - SUPABASE_SECRET_KEY=${SUPABASE_SECRET_KEY:-}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_USER=${POSTGRES_USER:-tg_userbot}
-      - DB_PASSWORD=${DB_PASSWORD:-tg_userbot_secure_password}
-      - DB_NAME=${POSTGRES_DB:-tg_userbot_db}
-      - REDIS_URL=redis://redis:6379/0
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-m", "control.main", "healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
 
-  # ───── WEB MANAGEMENT PANEL & STREAMER (PORT 8642) ─────
   web:
     build:
       context: .
       dockerfile: Dockerfile
     image: tg-userbot:latest
     container_name: tg-userbot-web
-    restart: unless-stopped
-    command: ["python", "web.py"]
+    command: ["web"]
     ports:
       - "8642:8642"
-    deploy:
-      replicas: 1
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 5
-        window: 120s
-      resources:
-        limits:
-          cpus: '0.5'
-          memory: 256M
-        reservations:
-          cpus: '0.1'
-          memory: 64M
     environment:
-      - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1
       - WEBBOT_HOST=0.0.0.0
       - WEBBOT_PORT=8642
       - USERBOT_DB=/app/data/userbot.db
       - USERBOT_SESSIONS=/app/sessions
       - USERBOT_MEDIA=/app/media_cache
-      - API_ID=${API_ID:-}
-      - API_HASH=${API_HASH:-}
-      - DB_HOST=db
-      - DB_PORT=5432
-      - DB_USER=${POSTGRES_USER:-tg_userbot}
-      - DB_PASSWORD=${DB_PASSWORD:-tg_userbot_secure_password}
-      - DB_NAME=${POSTGRES_DB:-tg_userbot_db}
-      - REDIS_URL=redis://redis:6379/0
+      - API_ID=${API_ID}
+      - API_HASH=${API_HASH}
     volumes:
       - userbot_sessions:/app/sessions
       - userbot_data:/app/data
       - userbot_media:/app/media_cache
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/api/state')\""]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 15s
-    networks:
-      - tg-userbot-network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-# ==============================================================================
-# NETWORKS & VOLUMES
-# ==============================================================================
-networks:
-  tg-userbot-network:
-    name: tg-userbot-network
-    driver: bridge
 
 volumes:
-  postgres_data:
-    name: tg-userbot-postgres-data
-    driver: local
-  redis_data:
-    name: tg-userbot-redis-data
-    driver: local
   userbot_sessions:
-    name: tg-userbot-sessions
-    driver: local
   userbot_data:
-    name: tg-userbot-data
-    driver: local
   userbot_media:
-    name: tg-userbot-media
-    driver: local

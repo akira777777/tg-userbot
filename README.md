@@ -10,7 +10,21 @@
      дедупликацией по прошлым кампаниям и чёрным списком.
 4. `export` — выгрузка SQLite → CSV (Excel-совместимо, UTF-8 BOM).
 
-Практическое руководство оператора (запуск на этой машине, карта команд, правила DM, Mini App, план улучшений): [docs/GUIDE.md](docs/GUIDE.md).
+Практическое руководство оператора: [docs/GUIDE.md](docs/GUIDE.md).
+
+## Как запускать на этой машине
+
+Интерпретатор: `.venv\Scripts\python.exe`. После правки очереди DM перезапустите `web.py`, иначе панель покажет старый `dm_available`.
+
+| Что | Команда |
+| --- | --- |
+| Сводка по базе | `.\.venv\Scripts\python.exe bot.py status` |
+| Панель | `.\.venv\Scripts\python.exe web.py` |
+| Тесты без Telegram | `.\.venv\Scripts\python.exe -m pytest` |
+| Тесты дашборда | `npm --prefix dashboard test` |
+| Docker панели | `docker compose -f docker-compose.yml up web` |
+
+`make status` / `make test` / `make web` зовут те же команды. Пакета `src.tg_userbot` нет. `docker compose up` без файла — это [docker-compose.yml](docker-compose.yml) с панелью и SQLite, не FastAPI и не Postgres. Mini App: [docker-compose.prod.yml](docker-compose.prod.yml) только с реальными `MINI_APP_URL` / `OWNER_TELEGRAM_IDS` / `BOT_TOKEN`.
 
 ## Настройка с нуля
 
