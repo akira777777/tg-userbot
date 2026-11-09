@@ -1,4 +1,4 @@
-name: CI / CD
+name: CI
 
 on:
   push:
@@ -7,53 +7,38 @@ on:
     branches: [main, develop]
   workflow_dispatch:
   schedule:
-    - cron: "0 0 * * *" # daily
+    - cron: "0 0 * * *"
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
   PYTHON_VERSION: "3.12"
-  POETRY_VERSION: "1.8.3"
 
 jobs:
-  # ───── TEST ─────
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
       - name: Install dependencies
-        run: |
-          poetry install --no-interaction --no-root --with dev
+        run: python -m pip install -e ".[dev]"
       - name: Run tests
-        run: |
-          pytest tests/ -v --cov=src/tg_userbot --cov-report=xml:coverage.xml --cov-report=html:htmlcov
-      - name: Upload coverage
-        uses: codecov/codecov-action@v4
-        with:
-          file: ./coverage.xml
-          name: tg-userbot-coverage
-          fail_ci_if_error: false
+        run: pytest tests/ -v --cov=control --cov-report=xml:coverage.xml --cov-report=term-missing
       - name: Upload coverage artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: |
-            coverage.xml
-            htmlcov/
+          path: coverage.xml
           if-no-files-found: ignore
 
-  # ───── LINT ─────
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -64,81 +49,56 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          cache: "pip"
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
       - name: Install dependencies
-        run: |
-          poetry install --no-interaction --no-root --with dev
-      - name: Run Ruff (linting)
-        run: |
-          poetry run ruff check src/ tests/
-      - name: Run Black (formatting)
-        run: |
-          poetry run black --check src/ tests/
-      - name: Run MyPy
-        run: |
-          poetry run mypy src/
+        run: python -m pip install -e ".[dev]"
+      - name: Run Ruff
+        run: ruff check control tests
+      - name: Run Black
+        run: black --check control tests
+      - name: Run mypy
+        run: mypy control
       - name: Run Bandit
-        run: |
-          poetry run bandit -r src/
+        run: bandit -r control -ll
       - name: Run pyright
-        uses: jake-berlin/action-pyright@v2
-        with:
-          report-unused-ignores: true
-          ignore: >-
-            .venv
-            __pycache__
-            *.egg-info
-            dist
-            build
-            htmlcov
+        run: pyright
 
-  # ───── DOCKER BUILD ─────
   docker-build:
     name: Build Docker Image
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [lint]
+    needs: [lint, test]
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: |
-            /root/.cache/pip
-            /root/.cache/pypoetry
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-      - name: Build
+      - name: Build production image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          tags: tg-userbot:ci
           target: prod
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      - name: Build with dev target
+      - name: Build development image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: false
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          tags: tg-userbot:ci-dev
           target: dev
 
-  # ───── DOCKER PUSH ─────
   docker-push:
     name: Push Docker Image
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [lint, docker-build]
+    needs: [docker-build]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
       - name: Set up Docker Buildx
@@ -146,7 +106,7 @@ jobs:
       - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push
@@ -155,66 +115,36 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest
           target: prod
-          cache-from: type=gha,scope=prod
-          cache-to: type=gha,mode=max,scope=prod
 
-  # ───── DEPLOY TO VERCEL ─────
   deploy:
     name: Deploy to Vercel
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [lint, docker-build]
+    needs: [docker-build]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install dependencies
+      - name: Check Vercel secrets
+        id: vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          pip install -e ".[dev]"
+          if [ -n "$VERCEL_TOKEN" ] && [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Vercel secrets are not configured; skipping deploy."
+          fi
       - name: Deploy to Vercel
+        if: steps.vercel.outputs.configured == 'true'
         uses: amondnet/vercel-deploy-action@v25
         with:
           vercel-token: ${{ secrets.VERCEL_TOKEN }}
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
           vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
           vercel-args: "--prod"
-
-  # ───── RELEASE ─────
-  release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: [docker-push, deploy]
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@v4
-      - name: Get version from git tag
-        id: get_version
-        run: |
-          echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-      - name: Generate Changelog
-        id: generate_changelog
-        run: |
-          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
-          echo "# Changelog" >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          echo "## ${{ steps.get_version.outputs.VERSION }}" >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          echo "All notable changes to this project will be documented in this file." >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          echo "## What's Changed" >> $GITHUB_OUTPUT
-          echo "" >> $GITHUB_OUTPUT
-          echo "- Initial release" >> $GITHUB_OUTPUT
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ steps.get_version.outputs.VERSION }}
-          name: Release ${{ steps.get_version.outputs.VERSION }}
-          body: ${{ steps.generate_changelog.outputs.CHANGELOG }}
-          generate_release_notes: true

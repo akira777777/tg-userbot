@@ -18,6 +18,7 @@ logs/
 .venv/
 __pycache__/
 *.pyc
+*.egg-info/
 
 # маркер последнего облачного push
 .cloud_last

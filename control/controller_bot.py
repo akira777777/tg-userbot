@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from telegram import KeyboardButton, ReplyKeyboardMarkup, Update, WebAppInfo
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
 
@@ -36,7 +38,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.effective_message.reply_text("Контроллер запущен. Открой панель через /start.")
 
 
-def build_application(settings: ControlSettings) -> Application:
+def build_application(settings: ControlSettings) -> Application[Any, Any, Any, Any, Any, Any]:
     application = ApplicationBuilder().token(settings.bot_token).build()
     application.bot_data["owner_ids"] = settings.owner_telegram_ids
     application.bot_data["mini_app_url"] = settings.mini_app_url

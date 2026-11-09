@@ -33,12 +33,12 @@ dependencies = [
     "aiofiles>=24.1.0",
     "fastapi>=0.115.4",
     "uvicorn[standard]>=0.32.0",
-    "fastapi-cors>=0.2.4",
     "jinja2>=3.1.5",
     "gunicorn>=23.0.0",
     "rich>=13.9.4",
     "python-dateutil>=2.9.0.post0",
     "aio-pika>=9.5.1",
+    "telethon>=1.36",
 ]
 
 [project.optional-dependencies]
@@ -47,33 +47,16 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=5.0.0",
     "pytest-mock>=3.14.0",
-    "pytest-xdist>=3.6.1",
-    "pytest-asyncio>=0.24.0",
     "httpx>=0.28.1",
-    "faker>=33.1.0",
-    "coverage>=7.6.10",
     "ruff>=0.6.9",
     "mypy>=1.14.1",
     "pyright>=1.1.389",
     "bandit>=1.8.0",
     "black>=25.1.0",
-    "pre-commit>=4.1.0",
-    "mkdocs>=1.6.1",
-    "mkdocstrings[python]>=1.12.1",
-    "mkdocs-material>=9.6.0",
-    "mkdocs-jupyter>=0.25.0",
-    "mkdocs-include-directive>=1.9.0",
-    "mkdocs-redirects>=1.2.2",
-    "sphinx>=8.1.3",
-    "sphinx-rtd-theme>=2.0.0",
-    "sphinx-autobuild>=2024.10.3",
-    "mike>=2.1.3",
-    "sphinxcontrib-mermaid>=1.0.0",
 ]
 
 [project.scripts]
-tg-userbot = "tg_userbot.main:main"
-tg-userbot-cli = "tg_userbot.cli:main"
+tg-userbot-control = "control.main:main"
 
 [project.urls]
 "Homepage" = "https://github.com/novra/tg-userbot"
@@ -82,11 +65,8 @@ tg-userbot-cli = "tg_userbot.cli:main"
 "Changelog" = "https://github.com/novra/tg-userbot/releases"
 
 [tool.setuptools.packages.find]
-where = ["src"]
-include = ["tg_userbot*"]
-
-[tool.setuptools.package-data]
-"tg_userbot" = ["py.typed", "pyproject.toml"]
+where = ["."]
+include = ["control*"]
 
 [tool.black]
 line-length = 120
@@ -107,7 +87,24 @@ exclude = [".venv", "__pycache__", "*.egg-info"]
 
 [tool.ruff.lint]
 select = ["E", "W", "F", "I", "N", "B", "UP", "YTT", "A", "C90", "COM", "EM", "ISC", "ICN", "PTH", "RUF", "SIM", "W", "TRY", "FLY", "ARG", "TCH", "DTZ", "A", "ASYNC", "T10", "RSE", "RUF"]
-ignore = ["E501", "RUF012", "COM812", "ISC001", "EM101", "EM102", "TRY003"]
+ignore = [
+    "E501",
+    "RUF012",
+    "COM812",
+    "ISC001",
+    "EM101",
+    "EM102",
+    "TRY003",
+    # Russian prose and comments trip homoglyph checks.
+    "RUF002",
+    "RUF003",
+    # Dispatch tables are intentionally branchy.
+    "C901",
+    # Pydantic models need these imports at runtime.
+    "TC001",
+    "TC002",
+    "TC003",
+]
 
 [tool.ruff.lint.per-file-ignores]
 "src/tg_userbot/api/routes/*" = ["ARG", "A003"]
@@ -124,6 +121,7 @@ exclude = ["tests/", "docs/", "scripts/", "build/", "dist/"]
 minversion = "8.3"
 addopts = "-ra -q --strict-markers --cov=control --cov-report=term-missing"
 testpaths = ["tests"]
+pythonpath = ["."]
 asyncio_mode = "auto"
 filterwarnings = [
     "error",

@@ -6,10 +6,10 @@ help:
 	@echo ""
 	@echo "Основные команды:"
 	@echo "  make install     — установить зависимости (pip install -e '.[dev]')"
-	@echo "  make dev         — запуск отладочного сервера (fastapi dev src/tg_userbot/main:app)"
-	@echo "  make test        — запуск тестов (pytest tests/ -v --cov)"
-	@echo "  make lint        — линтинг (ruff check src/tg_userbot)"
-	@echo "  make format      — форматирование (black src/ ruff format src/)"
+	@echo "  make dev         — проверка конфигурации контроллера (python -m control.main healthcheck)"
+	@echo "  make test        — запуск тестов (pytest tests/ -v)"
+	@echo "  make lint        — линтинг (ruff, black, mypy по control/ и tests/)"
+	@echo "  make format      — форматирование (black control tests)"
 	@echo "  make docs        — сборка документации (mkdocs serve)"
 	@echo "  make build       — сборка проекта (python -m build)"
 	@echo "  make run         — запуск в production (gunicorn src/tg_userbot.main:app)"
@@ -43,28 +43,27 @@ help:
 ## ============ ОСНОВНЫЕ КОМАНДЫ ============
 install:
 	pip install -e ".[dev]"
-	black src/ tests/
-	ruff check src/ tests/ --fix
 
 dev:
-	fastapi dev src/tg_userbot/main:app --reload
+	python -m control.main healthcheck
 
 test:
-	pytest tests/ -v --cov
+	pytest tests/ -v
 
 test-cov:
-	pytest tests/ -v --cov --cov-report=html --cov-report=term-missing
+	pytest tests/ -v --cov=control --cov-report=html --cov-report=term-missing
 
 test-fast:
 	pytest tests/ -v -x -k "fast"
 
 lint:
-	ruff check src/ tests/
-	mypy src/
+	ruff check control tests
+	black --check control tests
+	mypy control
 
 format:
-	black src/ tests/
-	ruff format src/ tests/
+	black control tests
+	ruff check control tests --fix
 
 docs:
 	mkdocs serve
@@ -73,7 +72,7 @@ build:
 	python -m build
 
 run:
-	gunicorn -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 src/tg_userbot.main:app
+	python -m control.main healthcheck
 
 clean:
 	rm -rf .venv dist/ build/ .eggs/ *.egg-info

@@ -2,28 +2,31 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
 import hmac
-from datetime import datetime, timezone, timedelta
+import json
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
+from control.account_alias import AccountAliasMapper
+from control.config import ControlSettings
 from control.models import (
+    BroadcastPayload,
     CommandKind,
     CommandMode,
     CommandPayload,
-    BroadcastPayload,
-    DmSendPayload,
     ConductPayload,
-    TelegramIdentity,
     ConfirmationIntent,
-    ValidatedCommand,
+    DmSendPayload,
+    TelegramIdentity,
 )
 from control.policy import CommandPolicy, Redactor
 from control.privacy_forward import ForwardPrivacyManager
-from control.account_alias import AccountAliasMapper
-from control.telegram_auth import verify_init_data, TelegramAuthError
-from control.config import ControlSettings
+from control.queue import _record_from_row
+from control.telegram_auth import TelegramAuthError, verify_init_data
+
 
 def is_owner(identity: TelegramIdentity, settings: ControlSettings) -> bool:
     return identity.telegram_user_id in settings.owner_telegram_ids
@@ -49,16 +52,13 @@ def test_conduct_payload_kind():
 
 
 def test_command_payload_live_requires_nonce():
-    try:
+    with pytest.raises(ValueError, match="confirmation_nonce"):
         CommandPayload(
             kind=CommandKind.BROADCAST,
             mode=CommandMode.LIVE,
             account="main",
             payload=BroadcastPayload(text="x"),
         )
-        raise AssertionError("ожидалась ошибка валидации")
-    except Exception:
-        pass  # ожидается
 
 
 def test_redactor_masks_user_id():
@@ -112,7 +112,7 @@ def test_telegram_identity_creation():
         telegram_user_id=123456789,
         username="testuser",
         first_name="Test",
-        auth_date=datetime.now(timezone.utc),
+        auth_date=datetime.now(UTC),
     )
     assert identity.telegram_user_id == 123456789
     assert identity.username == "testuser"
@@ -120,7 +120,7 @@ def test_telegram_identity_creation():
 
 def _make_init_data(bot_token: str, user_id: int, auth_date: int | None = None) -> str:
     if auth_date is None:
-        auth_date = int(datetime.now(timezone.utc).timestamp())
+        auth_date = int(datetime.now(UTC).timestamp())
     user_json = json.dumps({"id": user_id, "username": "test", "first_name": "Test"})
     data_check = f"auth_date={auth_date}\nuser={user_json}"
     # Официальный алгоритм Telegram WebApp:
@@ -152,7 +152,7 @@ def test_verify_init_data_tampered_hash():
 
 def test_verify_init_data_stale():
     bot_token = "123456:TEST_TOKEN"
-    old_date = int((datetime.now(timezone.utc) - timedelta(hours=2)).timestamp())
+    old_date = int((datetime.now(UTC) - timedelta(hours=2)).timestamp())
     init_data = _make_init_data(bot_token, 111, auth_date=old_date)
     try:
         verify_init_data(init_data, bot_token, max_age_seconds=300)
@@ -173,13 +173,13 @@ def test_is_owner_allowlist():
         telegram_user_id=123,
         username=None,
         first_name=None,
-        auth_date=datetime.now(timezone.utc),
+        auth_date=datetime.now(UTC),
     )
     identity_stranger = TelegramIdentity(
         telegram_user_id=999,
         username=None,
         first_name=None,
-        auth_date=datetime.now(timezone.utc),
+        auth_date=datetime.now(UTC),
     )
     assert is_owner(identity_owner, settings) is True
     assert is_owner(identity_stranger, settings) is False
@@ -219,8 +219,31 @@ def test_confirmation_intent_creation():
         nonce=uuid4(),
         owner_telegram_id=123,
         request_digest="abc123",
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
         canonical_summary="BROADCAST | text=привет | targets=5",
     )
     assert ci.owner_telegram_id == 123
     assert ci.consumed_at is None
+
+
+def test_record_from_row_nests_inner_payload():
+    record = _record_from_row(
+        {
+            "id": str(uuid4()),
+            "kind": "BROADCAST",
+            "mode": "DRY_RUN",
+            "account": "main",
+            "payload": {"text": "hi", "group_ids": [1]},
+            "owner_telegram_id": 123,
+            "status": "PENDING",
+            "created_at": "2026-01-01T00:00:00Z",
+            "version": 2,
+        }
+    )
+    assert record.request.kind == CommandKind.BROADCAST
+    assert record.request.mode == CommandMode.DRY_RUN
+    assert isinstance(record.request.payload, BroadcastPayload)
+    assert record.request.payload.text == "hi"
+    assert record.request.payload.group_ids == [1]
+    assert record.requested_by == 123
+    assert record.version == 2

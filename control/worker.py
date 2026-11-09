@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 from pathlib import Path
 from typing import Any
@@ -12,17 +13,15 @@ from control.config import ControlSettings
 from control.executor import UserbotRuntime
 from control.models import CommandRecord, CommandStatus
 from control.policy import CommandPolicy
-from control.queue import QueueRepository
 from control.privacy_forward import ForwardPrivacyManager
+from control.queue import QueueRepository
 
 
 class ControlWorker:
     def __init__(self, settings: ControlSettings) -> None:
         self._settings = settings
         self._queue = QueueRepository(settings)
-        self._runtime = UserbotRuntime(
-            settings, Path(__file__).resolve().parent.parent
-        )
+        self._runtime = UserbotRuntime(settings, Path(__file__).resolve().parent.parent)
         self._policy = CommandPolicy(settings)
         self._forward_privacy = ForwardPrivacyManager(enabled=settings.forward_privacy)
         self._alias_mapper = AccountAliasMapper()
@@ -33,10 +32,8 @@ class ControlWorker:
         self._running = True
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
+            with contextlib.suppress(NotImplementedError, OSError):
                 loop.add_signal_handler(sig, self._shutdown)
-            except (NotImplementedError, OSError):
-                pass  # Windows may not support all signals
 
         print(
             f"Контрольный воркер запущен: worker={self._settings.worker_id}, "
@@ -47,7 +44,7 @@ class ControlWorker:
         while self._running:
             try:
                 await self._tick()
-            except Exception as exc:  # noqa: BLE001 - worker must not die on transient error
+            except Exception as exc:
                 print(f"Ошибка тика воркера: {self._forward_privacy.redact_log_line(str(exc))}")
             await asyncio.sleep(self._settings.poll_interval_seconds)
 

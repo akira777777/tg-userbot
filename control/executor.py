@@ -17,12 +17,14 @@ from typing import Any
 from control.account_alias import AccountAliasMapper
 from control.config import ControlSettings
 from control.models import (
+    BlacklistAddPayload,
     BroadcastPayload,
     CommandKind,
     CommandRecord,
-    CommandStatus,
     ConductPayload,
     DmSendPayload,
+    ReadPayload,
+    StopPayload,
 )
 from control.privacy_forward import ForwardPrivacyManager
 
@@ -55,7 +57,7 @@ class UserbotRuntime:
                 "redacted_account": self._alias_mapper.mask_internal_name(account),
             }
 
-        cmd = [self._python, str(self._root / "bot.py")] + argv
+        cmd = [self._python, str(self._root / "bot.py"), *argv]
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -92,7 +94,7 @@ class UserbotRuntime:
     def _build_argv(
         self,
         kind: CommandKind,
-        payload: BroadcastPayload | DmSendPayload | ConductPayload,
+        payload: BroadcastPayload | DmSendPayload | ConductPayload | ReadPayload | BlacklistAddPayload | StopPayload,
         account: str,
     ) -> list[str] | None:
         """Переводит типизированный payload в argv bot.py."""
@@ -162,12 +164,6 @@ class UserbotRuntime:
             args += ["--dry-run"]
             return args
         if kind == CommandKind.STOP:
-            if isinstance(payload, dict):
-                args = ["stop"]
-                if payload.get("command_id"):
-                    args += ["--command-id", str(payload["command_id"])]
-                if payload.get("account") and payload["account"] != "all":
-                    args += ["--account", str(payload["account"])]
-                return args
+            # bot.py has no stop subcommand; cancellation stays in the queue worker.
             return None
         return None

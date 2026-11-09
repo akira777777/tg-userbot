@@ -18,11 +18,12 @@ from control.worker import main as worker_main
 def healthcheck() -> int:
     try:
         settings = ControlSettings.from_environment()
-        print("OK", settings.model_redacted() if hasattr(settings, "model_redacted") else settings)
-        return 0
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         print(f"FAIL: {exc}")
         return 1
+    else:
+        print("OK", settings.model_redacted())
+        return 0
 
 
 def main() -> None:
