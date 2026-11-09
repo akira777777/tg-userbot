@@ -809,10 +809,14 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
     """Общий цикл отправки: журнал sent с авторством аккаунта, FloodWait ->
     cooldown в реестре аккаунтов, рандом-паузы. media: путь к файлу (фото/видео) —
     тогда текст уходит подписью (caption)."""
-    cur = conn.execute("INSERT INTO campaigns(kind,text,created_at,account) VALUES(?,?,?,?)",
-                       (kind, text, now_iso(), account))
-    camp = cur.lastrowid
-    conn.commit()
+    if args.dry_run:
+        camp = None
+    else:
+        cur = conn.execute(
+            "INSERT INTO campaigns(kind,text,created_at,account) VALUES(?,?,?,?)",
+            (kind, text, now_iso(), account))
+        camp = cur.lastrowid
+        conn.commit()
     # #region agent log
     _agent_dbg("A", "bot.py:send_run", "campaign row committed before send loop",
                {"dry_run": bool(args.dry_run), "kind": kind, "campaign": camp,
@@ -882,7 +886,10 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
     suffix = " [dry-run, ничего не отправлено]" if args.dry_run else ""
     if halt:
         suffix += f" [остановлено: {halt_reason} — аккаунт в cooldown]"
-    print(f"Кампания #{camp} ({kind}, «{account}»): отправлено {ok}, попыток {done}{suffix}")
+    if args.dry_run:
+        print(f"Сухой прогон ({kind}, «{account}»): целей {len(targets)}, отправлено 0{suffix}")
+    else:
+        print(f"Кампания #{camp} ({kind}, «{account}»): отправлено {ok}, попыток {done}{suffix}")
     return camp
 
 
