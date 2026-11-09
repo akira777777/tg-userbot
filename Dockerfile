@@ -20,7 +20,7 @@ RUN mkdir -p /app/data /app/sessions /app/exports && \
 
 USER userbot
 ENV USERBOT_DB=/app/data/userbot.db \
-    SESSION_DIR=/app/sessions
+    USERBOT_SESSIONS=/app/sessions
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD ["python", "scripts/healthcheck.py", "--db", "/app/data/userbot.db"]

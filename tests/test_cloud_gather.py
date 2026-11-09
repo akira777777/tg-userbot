@@ -66,6 +66,7 @@ def test_gather_matches_grouped_counts_and_skips_members(tmp_path, monkeypatch):
             ("main", 30, 0, today),
         ],
     )
+    con.execute("INSERT INTO blacklist VALUES(9, 'hidden-user', 'manual', ?)", (today,))
     con.execute("INSERT INTO members VALUES(1, 'secret-nick-not-for-cloud')")
     con.execute("INSERT INTO members VALUES(2, 'other-secret')")
     con.executemany("INSERT INTO member_sources VALUES(?,?)", [(1, 10), (2, 10), (1, 20)])
@@ -91,7 +92,10 @@ def test_gather_matches_grouped_counts_and_skips_members(tmp_path, monkeypatch):
     try:
         out = cloud.gather(con)
         assert "tb_members" not in out
-        assert "secret-nick-not-for-cloud" not in json.dumps(out, ensure_ascii=False)
+        encoded = json.dumps(out, ensure_ascii=False)
+        assert "secret-nick-not-for-cloud" not in encoded
+        assert "hidden-user" not in encoded
+        assert "api_id" not in encoded
 
         accounts = {row["name"]: row for row in out["tb_accounts"][0]}
         assert (accounts["main"]["groups_covered"], accounts["main"]["writable_groups"], accounts["main"]["dm_today"]) == (3, 2, 1)

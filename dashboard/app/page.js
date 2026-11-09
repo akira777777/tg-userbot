@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import CommandForm from "../components/command-form";
 
 const REFRESH_MS = 15_000;
 
@@ -96,6 +97,6 @@ export default function Home() {
   return <main className="wrap"><header><p className="eyebrow">TG USERBOT</p><h1>Панель управления</h1><p className="muted">Доступ только для владельца через Telegram.</p></header>
     {state === "authorizing" && <p className="notice">Проверяю вход через Telegram…</p>}
     {state === "error" && <p className="notice error" role="alert">{error}</p>}
-    {state === "ready" && data && <><Snapshot data={data} /><section className="panel"><h2>Управление</h2><p>Команды на выполнение будут подключены к единому локальному worker. До этого панель только читает состояние и не может запустить рассылку.</p></section></>}
+    {state === "ready" && data && <><Snapshot data={data} /><CommandForm /></>}
   </main>;
 }

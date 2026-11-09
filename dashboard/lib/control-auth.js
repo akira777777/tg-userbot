@@ -20,7 +20,12 @@ function ownerIds() {
 }
 
 function hmac(key, value) { return crypto.createHmac("sha256", key).update(value).digest(); }
-function sign(value) { return crypto.createHmac("sha256", required("CONTROL_SESSION_SECRET")).update(value).digest("base64url"); }
+export function sessionSecret() {
+  const value = required("CONTROL_SESSION_SECRET");
+  if (value.length < 32 || value === "change-me-in-production") throw new Error("CONTROL_SESSION_SECRET is unsafe");
+  return value;
+}
+function sign(value) { return crypto.createHmac("sha256", sessionSecret()).update(value).digest("base64url"); }
 
 export function verifyTelegramInitData(initData, nowSeconds = Math.floor(Date.now() / 1000)) {
   if (typeof initData !== "string" || !initData) throw new Error("Missing Telegram authentication data");

@@ -51,7 +51,7 @@ def api(method, table, params="", body=None, prefer=None):
                  "Content-Type": "application/json",
                  "Prefer": prefer or "resolution=merge-duplicates"})
     try:
-        with urllib.request.urlopen(req, timeout=45) as r:
+        with urllib.request.urlopen(req, timeout=45) as r:  # nosec B310
             raw = r.read()
             return r.status, (json.loads(raw) if raw else None), dict(r.headers)
     except urllib.error.HTTPError as e:
@@ -100,7 +100,7 @@ def gather(con):
     for a in con.execute("SELECT * FROM accounts"):
         name = a["name"]
         cov = coverage.get(name)
-        accs.append({"name": name, "user_id": a["user_id"], "api_id": a["api_id"],
+        accs.append({"name": name, "user_id": a["user_id"],
                      "enabled": bool(a["enabled"]), "daily_budget": a["daily_budget"],
                      "flood_until": a["flood_until"], "note": a["note"],
                      "groups_covered": cov["covered"] if cov else 0,
@@ -162,9 +162,9 @@ def gather(con):
                                  (SENT_LIMIT,))]
     out["tb_sent"] = (sent, "campaign,target,account")
 
-    bl = [{"user_id": b["user_id"], "username": b["username"], "reason": b["reason"],
+    bl = [{"user_id": b["user_id"], "reason": b["reason"],
            "ts": b["ts"], "synced_at": now.isoformat(timespec="seconds")}
-          for b in con.execute("SELECT * FROM blacklist")]
+          for b in con.execute("SELECT user_id, reason, ts FROM blacklist")]
     out["tb_blacklist"] = (bl, "user_id")
 
     def one(q, *a):
@@ -245,8 +245,8 @@ def cmd_status():
         print(f"{t:<14} {rows:>8}  {local}")
 
 
-if __name__ == "__main__":
-    op = sys.argv[1] if len(sys.argv) > 1 else "push"
+def main(argv=None):
+    op = (argv if argv is not None else sys.argv)[1] if len(argv if argv is not None else sys.argv) > 1 else "push"
     if op == "push":
         cmd_push()
     elif op == "test":
@@ -255,3 +255,7 @@ if __name__ == "__main__":
         cmd_status()
     else:
         raise SystemExit("использование: cloud.py push|test|status")
+
+
+if __name__ == "__main__":
+    main()

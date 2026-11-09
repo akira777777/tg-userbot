@@ -1,0 +1,119 @@
+Metadata-Version: 2.4
+Name: tg-userbot
+Version: 0.2.0
+Summary: Telegram Userbot with media library, multi-platform support and dashboard
+Author-email: Novra <novra@example.com>
+License: MIT
+Project-URL: Homepage, https://github.com/novra/tg-userbot
+Project-URL: Documentation, https://tg-userbot.novra.dev
+Project-URL: Source, https://github.com/novra/tg-userbot
+Project-URL: Changelog, https://github.com/novra/tg-userbot/releases
+Keywords: telegram,bot,media,library,userbot
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Programming Language :: Python :: 3.13
+Requires-Python: >=3.12
+Description-Content-Type: text/markdown
+Requires-Dist: aiohttp>=3.9
+Requires-Dist: python-telegram-bot>=21.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: pydantic>=2.5
+Requires-Dist: supabase>=2.0
+Requires-Dist: telethon>=1.36
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.3; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.24.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0.0; extra == "dev"
+Requires-Dist: pytest-mock>=3.14.0; extra == "dev"
+Requires-Dist: pytest-xdist>=3.6.1; extra == "dev"
+Requires-Dist: httpx>=0.28.1; extra == "dev"
+Requires-Dist: coverage>=7.6.10; extra == "dev"
+Requires-Dist: ruff>=0.6.9; extra == "dev"
+Requires-Dist: mypy>=1.14.1; extra == "dev"
+Requires-Dist: bandit>=1.8.0; extra == "dev"
+Requires-Dist: black>=25.1.0; extra == "dev"
+Requires-Dist: pre-commit>=4.1.0; extra == "dev"
+Requires-Dist: mkdocs>=1.6.1; extra == "dev"
+Requires-Dist: mkdocstrings[python]>=1.12.1; extra == "dev"
+Requires-Dist: mkdocs-material>=9.6.0; extra == "dev"
+
+# tg-userbot
+
+Telethon-based tooling for a trusted personal Telegram account. The local SQLite database and Telegram session files are the system of record. Supabase stores an intentionally reduced operational mirror and the owner-only command queue; `dashboard/` is the Telegram Mini App frontend.
+
+## Components
+
+- `bot.py` — login, group discovery, scraping, broadcasts, direct messages, account orchestration, exports, and privacy operations.
+- `web.py` — legacy loopback-only local panel. Keep it on `127.0.0.1`.
+- `cloud.py` — push the reduced mirror to Supabase.
+- `control/` — Telegram Bot API controller and trusted queue worker.
+- `dashboard/` — Next.js Mini App deployed separately (for example on Vercel).
+- `supabase/schema.sql` — mirror and command-queue schema.
+
+The repository does not contain a FastAPI service, Redis application cache, or PostgreSQL application database.
+
+## Local setup
+
+Requires Python 3.12+.
+
+```bash
+python -m venv .venv
+# Windows: .venv\\Scripts\\activate
+# Linux/macOS: source .venv/bin/activate
+python -m pip install -e ".[dev]"
+copy .env.example .env
+python bot.py login
+```
+
+Set `API_ID` and `API_HASH` from https://my.telegram.org before login. Treat `.env`, `userbot.db`, and all `*.session*` files as secrets.
+
+## Common commands
+
+```bash
+python bot.py groups --sync
+python bot.py scrape
+python bot.py broadcast --text "Preview" --dry-run
+python bot.py dmsend --file message.txt --limit 10 --dry-run
+python bot.py status
+python bot.py export
+python cloud.py push
+```
+
+Direct-message automation can violate Telegram policy and can restrict or ban the account. Start with dry runs and conservative limits.
+
+## Mini App control plane
+
+1. Apply `supabase/schema.sql` to the Supabase project.
+2. Configure the control variables from `.env.example` with a random `CONTROL_SESSION_SECRET` of at least 32 characters.
+3. Deploy `dashboard/` and set its server-side environment variables.
+4. Start the trusted local processes:
+
+```bash
+python -m control.main worker
+python -m control.main telegram-bot
+```
+
+The worker must run where `userbot.db` and authorized Telegram sessions are available. The dashboard never receives session files or Telegram API hashes.
+
+## Containers
+
+The image runs the control worker by default. Persist both data and sessions:
+
+```bash
+docker compose up -d
+```
+
+`docker-compose.prod.yml` uses a prebuilt image. The dashboard remains a separate deployment.
+
+## Verification
+
+```bash
+python -m pytest tests/
+python -m ruff check bot.py cloud.py web.py control tests scripts/healthcheck.py
+cd dashboard && npm test -- --run && npm run build
+```
+
+See `docs/architecture/ARCHITECTURE.md` for trust boundaries and data flow.

@@ -161,7 +161,7 @@ class QueueRepository:
         self,
         command_id: UUID,
         status: CommandStatus,
-        result_summary: str | None = None,
+        result_summary: dict | None = None,
         error_code: str | None = None,
     ) -> bool:
         """Завершает команду с терминальным статусом (один раз)."""
@@ -189,7 +189,7 @@ class QueueRepository:
         self,
         command_id: UUID,
         error_code: str,
-        result_summary: str | None = None,
+        result_summary: dict | None = None,
     ) -> bool:
         return self.complete(command_id, CommandStatus.FAILED, result_summary, error_code)
 
@@ -202,27 +202,27 @@ class QueueRepository:
         if self._client is None:
             raise RuntimeError("Supabase client не инициализирован")
 
-        filters = [
-            ("id", str(command_id)),
-            ("status", CommandStatus.PENDING.value),
-        ]
-        # claimed может отменить только владелец аренды
-        query = self._client.table("control_commands").update(
-            {"status": CommandStatus.CANCELLED.value, "finished_at": self._now().isoformat()}
+        update = {"status": CommandStatus.CANCELLED.value, "finished_at": self._now().isoformat()}
+        pending = (
+            self._client.table("control_commands")
+            .update(update)
+            .eq("id", str(command_id))
+            .eq("status", CommandStatus.PENDING.value)
+            .execute()
         )
-        # Оптимистично: пробуем pending, затем claimed по worker_id
-        result = query.eq("id", str(command_id)).eq("status", CommandStatus.PENDING.value).execute()
-        if result.data:
+        if pending.data:
             return True
-        if worker_id:
-            result = (
-                query.eq("id", str(command_id))
-                .eq("status", CommandStatus.CLAIMED.value)
-                .eq("claimed_by", worker_id)
-                .execute()
-            )
-            return bool(result.data)
-        return False
+        if not worker_id:
+            return False
+        claimed = (
+            self._client.table("control_commands")
+            .update(update)
+            .eq("id", str(command_id))
+            .eq("status", CommandStatus.CLAIMED.value)
+            .eq("claimed_by", worker_id)
+            .execute()
+        )
+        return bool(claimed.data)
 
     def get_history(
         self,

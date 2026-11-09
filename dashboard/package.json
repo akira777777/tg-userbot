@@ -8,6 +8,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@supabase/server": "^1.9.2",
     "@telegram-apps/sdk": "^2.4.0",
     "next": "16.4.5",
     "react": "^19.2.0",

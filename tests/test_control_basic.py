@@ -19,7 +19,6 @@ from control.models import (
     ConductPayload,
     TelegramIdentity,
     ConfirmationIntent,
-    ValidatedCommand,
 )
 from control.policy import CommandPolicy, Redactor
 from control.privacy_forward import ForwardPrivacyManager

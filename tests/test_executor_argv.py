@@ -12,6 +12,7 @@ import pytest
 from control.config import ControlSettings
 from control.executor import UserbotRuntime
 from control.models import (
+    BlacklistAddPayload,
     BroadcastPayload,
     CommandKind,
     CommandMode,
@@ -63,28 +64,45 @@ def test_read_only_commands_do_not_send():
         assert "--dry-run" not in built
 
 
-def test_delivery_commands_stay_dry_run_even_when_live():
+def test_blacklist_add_is_supported():
+    argv = _runtime()._build_argv(
+        CommandKind.BLACKLIST_ADD,
+        BlacklistAddPayload(value="123"),
+        "main",
+        CommandMode.DRY_RUN,
+    )
+    assert argv == ["blacklist", "add", "123", "--reason", "вручную"]
+
+
+def test_delivery_mode_controls_dry_run():
     runtime = _runtime()
     broadcast = runtime._build_argv(
         CommandKind.BROADCAST,
         BroadcastPayload(text="привет", group_ids=[3]),
         "main",
+        CommandMode.DRY_RUN,
     )
     direct = runtime._build_argv(
         CommandKind.DMSEND,
         DmSendPayload(text="личка", limit=5),
         "main",
+        CommandMode.DRY_RUN,
     )
     conduct = runtime._build_argv(
         CommandKind.CONDUCT,
         ConductPayload(kind="dm", text="волна", group_id=9),
         "main",
+        CommandMode.DRY_RUN,
     )
     live = _record(CommandKind.BROADCAST, CommandMode.LIVE, BroadcastPayload(text="live"))
-    live_argv = runtime._build_argv(live.request.kind, live.request.payload, live.request.account)
-    for argv in (broadcast, direct, conduct, live_argv):
+    live_argv = runtime._build_argv(
+        live.request.kind, live.request.payload, live.request.account, live.request.mode
+    )
+    for argv in (broadcast, direct, conduct):
         assert argv is not None
         assert argv[-1] == "--dry-run"
+    assert live_argv is not None
+    assert "--dry-run" not in live_argv
 
 
 @pytest.mark.asyncio

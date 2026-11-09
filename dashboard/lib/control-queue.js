@@ -27,6 +27,16 @@ function supabaseUrl(path) {
 }
 
 const LIVE_KINDS = new Set(["BROADCAST", "DMSEND", "CONDUCT"]);
+const READ_KINDS = new Set(["STATUS", "GROUPS", "CAMPAIGNS", "MEDIA_LIST"]);
+export const SUPPORTED_COMMANDS = new Set([...READ_KINDS, ...LIVE_KINDS, "BLACKLIST_ADD", "STOP"]);
+
+export function commandRejection(kind, mode) {
+  if (!SUPPORTED_COMMANDS.has(kind)) return "неподдерживаемая команда";
+  if (READ_KINDS.has(kind) && mode !== "READ") return "read-only команда требует режим READ";
+  if (LIVE_KINDS.has(kind) && mode === "READ") return "команда доставки не может быть READ";
+  if (!["READ", "DRY_RUN", "LIVE"].includes(mode)) return "неподдерживаемый режим";
+  return null;
+}
 const MAX_TEXT_LENGTH = 4000;
 const MAX_GROUP_IDS = 200;
 const MAX_DM_LIMIT = 200;
@@ -92,6 +102,8 @@ async function consumeConfirmation({ ownerId, nonce, requestDigest }) {
 }
 
 export async function enqueueCommand({ ownerId, kind, mode, account, payload, idempotencyKey, confirmationNonce }) {
+  const rejected = commandRejection(kind, mode);
+  if (rejected) throw new Error(rejected);
   const validationError = validateCommandPayload(kind, payload);
   if (validationError) throw new Error(validationError);
 

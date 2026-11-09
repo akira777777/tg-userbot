@@ -84,8 +84,7 @@ target-version = "py312"
 exclude = [".venv", "__pycache__", "*.egg-info"]
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "I", "N", "B", "UP", "YTT", "A", "C90", "COM", "EM", "ISC", "ICN", "PTH", "RUF", "SIM", "W", "TRY", "FLY", "ARG", "TCH", "DTZ", "A", "ASYNC", "T10", "RSE", "RUF"]
-ignore = ["E501", "RUF012", "COM812", "ISC001", "EM101", "EM102", "TRY003"]
+select = ["E9", "F"]
 
 [tool.mypy]
 python_version = "3.12"

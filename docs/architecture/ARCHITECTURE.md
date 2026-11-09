@@ -1,271 +1,49 @@
-# Архитектура
+# Architecture
 
-> Архитектурный обзор tg-userbot.
+## Runtime model
 
-## Высокоуровневая архитектура
+The trusted machine is the security boundary. `bot.py` uses Telethon sessions and SQLite directly; there is no remote API with access to Telegram credentials.
 
-```
-┌─────────────────────────────────────────┐
-│  Client Layer (Telegram, HTTP, Web UI)   │
-├─────────────────────────────────────────┤
-│  Application Layer                      │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│  │ Handlers │  │  API     │  │  Media    │
-│  │          │  │  Routes  │  │  Library  │
-│  └──────────┘  └──────────┘  └──────────┘
-├─────────────────────────────────────────┤
-│  Domain Layer (бизнес-логика)           │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│  │  Search  │  │  Upload  │  │  Media    │
-│  │          │  │  Download│  │  Metadata │
-│  └──────────┘  └──────────┘  └──────────┘
-├─────────────────────────────────────────┤
-│  Repository Layer                       │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐
-│  │  Supabase│  │  Redis   │  │  Local    │
-│  │  DB      │  │  Cache   │  │  Storage  │
-│  └──────────┘  └──────────┘  └──────────┘
-└─────────────────────────────────────────┘
+```text
+Telegram MTProto <-> bot.py <-> userbot.db
+                         |-> sessions/*.session
+                         |-> cloud.py -> Supabase mirror
+
+Telegram Mini App -> dashboard server routes -> Supabase command queue
+                                                   |
+                                      control/worker.py
+                                                   |
+                                      control/executor.py -> bot.py
 ```
 
-## Слои архитектуры
+## Responsibilities
 
-### Client Layer
+- `bot.py`: userbot domain operations, account selection, throttling, sending, and local persistence.
+- `web.py`: legacy loopback-only operator panel that starts `bot.py` subprocesses.
+- `cloud.py`: one-way synchronization of reduced operational data.
+- `control/`: authenticated owner command models, queue repository, policy, worker, and subprocess adapter.
+- `dashboard/`: Telegram initData authentication, signed session cookie, read model, and command submission UI.
+- `supabase/schema.sql`: mirror tables, command queue, events, leases, and RLS.
 
-- **Telegram Bot API** — обработка сообщений, медиа, файлов
-- **HTTP API** — RESTful API (FastAPI)
-- **Web UI** — React-панель
+## Trust boundaries
 
-### Application Layer
+1. `.env`, `userbot.db`, and Telegram session files stay on the trusted worker host.
+2. The dashboard holds a server-side Supabase credential and must never expose it to browser bundles.
+3. Browser requests require verified Telegram initData and an owner allowlist.
+4. LIVE commands require a confirmation nonce bound to the request digest.
+5. The worker validates every claimed command again before execution.
+6. Cloud synchronization excludes collected member records and minimizes account metadata.
 
-- **Handlers** — обработчики команд
-- **API Routes** — маршруты HTTP API
-- **Media Library** — медиа-библиотека
+## Persistence and concurrency
 
-### Domain Layer
+SQLite is the local source of truth and uses WAL plus a busy timeout for concurrent readers. Supabase is a telemetry mirror and remote command transport, not a replacement for SQLite. Queue claims use leases so only one worker owns a command; long-running commands renew their lease until completion.
 
-- **Search** — поиск по медиатеке
-- **Upload** — загрузка файлов
-- **Download** — скачивание файлов
-- **Metadata** — метаданные (артист, альбом, жанр)
+## Deployment
 
-### Repository Layer
+- Local CLI: `python bot.py <command>`.
+- Worker: `python -m control.main worker`.
+- Controller: `python -m control.main telegram-bot`.
+- Dashboard: deploy `dashboard/` separately.
+- Container: the production image defaults to the worker and requires persistent `/app/data` and `/app/sessions` volumes.
 
-- **Supabase DB** — PostgreSQL (хранение данных)
-- **Redis** — кеширование, rate-limiting
-- **Local Storage** — локальное хранилище файлов
-
-## Паттерны проектирования
-
-### Repository Pattern
-
-```python
-class MediaRepository(Repository):
-    def find_by_id(self, media_id: int) -> Media | None: ...
-    def find_by_query(self, query: str) -> list[Media]: ...
-    def find_by_tags(self, tags: list[str]) -> list[Media]: ...
-    def find_by_category(self, category: str) -> list[Media]: ...
-```
-
-### Service Layer
-
-```python
-class MediaService(Service):
-    def upload(self, file: File, metadata: Metadata) -> Media: ...
-    def search(self, query: str) -> list[Media]: ...
-    def download(self, media_id: int) -> bytes: ...
-```
-
-### DTO Pattern
-
-```python
-class MediaCreateDTO(BaseModel):
-    title: str
-    url: str
-    category: str
-    tags: list[str]
-```
-
-### Event Sourcing
-
-```python
-class EventStore:
-    def append(self, event: Event) -> EventId: ...
-    def replay(self) -> list[Event]: ...
-```
-
-## Базы данных
-
-### PostgreSQL (Supabase)
-
-- **users** — пользователи
-- **media** — медиа-файлы
-- **collections** — коллекции
-- **tags** — теги
-- **metadata** — метаданные
-- **views** — просмотры
-
-### Redis
-
-- **Кеширование** — результаты поиска, мета-данные
-- **Rate limiting** — ограничение частоты запросов
-- **Pub/Sub** — уведомления о новых медиа
-
-### Local Storage
-
-- **Media files** — файлы в S3/MinIO
-- **Thumbnails** — миниатюры
-- **Index** — векторное представление
-
-## Кеширование
-
-```
-media (медиа-файлы) ──┐
-                        │
-metadata (мета-данные)─┼──> Redis (TTL: 1ч)
-                        │
-search (результаты)    ─┘
-```
-
-## Мониторинг
-
-### Prometheus
-
-- **media.added** — новое медиа
-- **media.searched** — поиск
-- **media.failed** — ошибки
-- **media.views** — просмотры
-
-### Grafana
-
-- Дашборды:
-  - Медиа-библиотека
-  - Поиск
-  - Загрузка/скачивание
-  - Ошибки
-
-## Логи
-
-```
-Format: JSON
-Fields: timestamp, level, module, event, data
-```
-
-## Тестирование
-
-- **Unit tests** — модульная логика
-- **Integration tests** — взаимодействие с БД, Redis
-- **End-to-end tests** — полный стек (Docker Compose)
-
-## Производительность
-
-- **Поиск**: 0.1–2 мс (векторный поиск Chroma)
-- **Пагинация**: cursor-based (для больших датасетов)
-- **Кеширование**: Redis (TTL: 1 час)
-- **Индексы**: SQLite (малые датасеты), PostgreSQL (большие)
-
-## Безопасность
-
-- **JWT** — аутентификация
-- **Rate limiting** — ограничение частоты запросов
-- **Миграция**: шифрование файлов на диске
-- **Сквозное шифрование** — S3/MinIO
-
-## Масштабируемость
-
-- **Горизонтальное масштабирование** — stateless сервисы (N экземпляров)
-- **Вертикальное масштабирование** — добавление CPU/RAM
-- **Шардирование** — разделение данных по хостам
-- **Автоскейлинг** — Kubernetes + HPA
-
-## Вклад в архитектуру
-
-- Пиши архитектурные решения
-- Добавляй диаграммы
-- Улучшай документацию
-
-## Вклад в код
-
-- Пиши модульный код
-- Используй type hints
-- Пиши docstring
-
-## Вклад в тесты
-
-- Пиши unit-тесты
-- Пиши интеграционные тесты
-- Не снижай coverage ниже 80%
-
-## Вклад в документацию
-
-- Пиши гайды
-- Добавляй примеры
-- Исправляй ошибки
-
-## Вклад в инфраструктуру
-
-- Docker Compose
-- CI/CD
-- Мониторинг
-
-## Вклад в дизайн
-
-- UI/UX
-- Иконки
-- Шрифты
-
-## Вклад в маркетинг
-
-- Статья в блог
-- Видео-туториал
-- Пост в соцсети
-
-## Вклад в поддержку
-
-- Ответы на вопросы
-- Гайды
-- Участие в разработке
-
-## Вклад в баг-репорты
-
-- Issue с минимальным воспроизведением
-- Версия, ОС, шаги воспроизведения
-- Скриншоты
-
-## Вклад в оптимизацию
-
-- Профилирование
-- Оптимизация hot path
-- Кеширование
-
-## Вклад в безопасность
-
-- Аудит кода
-- Типы в сигнатурах
-- Исправление уязвимостей
-
-## Вклад в производительность
-
-- Оптимизация запросов к БД
-- Индексы
-- Оптимизация поиска
-
-## Вклад в DevEx
-
-- Улучшение DX
-- Улучшение UX
-- Команды в Makefile
-
-## Вклад в локализацию
-
-- Добавление строк в `i18n/`
-- Перевод README + docs
-- Исправление грамматики
-
-## Вопросы?
-
-Создай issue или напиши в `#architecture` в Discord.
-
-## Лицензия
-
-MIT © Novra
+Redis, FastAPI, and a separate PostgreSQL application database are not part of this architecture.

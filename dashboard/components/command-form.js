@@ -1,160 +1,93 @@
 "use client";
 
-import { useState } from 'react';
+import { useState } from "react";
 
-export default function CommandForm({ action, onSubmit, initData }) {
-  const [text, setText] = useState('');
-  const [delayMin, setDelayMin] = useState('20');
-  const [delayMax, setDelayMax] = useState('45');
-  const [limit, setLimit] = useState('200');
-  const [repeatOk, setRepeatOk] = useState(false);
-  const [dryRun, setDryRun] = useState(true);
-  [action, onSubmit, initData];
+const READ_KINDS = new Set(["STATUS", "GROUPS", "CAMPAIGNS", "MEDIA_LIST"]);
+const DELIVERY_KINDS = new Set(["BROADCAST", "DMSEND", "CONDUCT"]);
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    const command = {
-      kind: action.kind === 'LIVE' ? 'BROADCAST' : 'READ',
-      mode: action.kind,
-      account: 'main',
-      payload: {
-        text,
-        delay_min: parseFloat(delayMin) || 0,
-        delay_max: parseFloat(delayMax) || 0,
-        group_ids: [],
-        limit: parseInt(limit, 10) || 200,
-        repeat_ok: repeatOk,
-        dry_run: dryRun,
-      },
-      idempotency_key: crypto.randomUUID(),
-    };
+function payloadFor(kind, text) {
+  if (READ_KINDS.has(kind)) return {};
+  if (kind === "BLACKLIST_ADD") return { value: text, reason: "mini-app" };
+  if (kind === "STOP") return { account: "all" };
+  const payload = { text, delay_min: 20, delay_max: 45 };
+  if (kind === "DMSEND") payload.limit = 20;
+  if (kind === "CONDUCT") payload.kind = "broadcast";
+  return payload;
+}
 
-    if (action.kind === 'LIVE') {
-      command.mode = 'LIVE';
+export default function CommandForm() {
+  const [kind, setKind] = useState("STATUS");
+  const [text, setText] = useState("");
+  const [live, setLive] = useState(false);
+  const [message, setMessage] = useState("");
+  const [pending, setPending] = useState(false);
+  const delivery = DELIVERY_KINDS.has(kind);
+
+  async function submit(event) {
+    event.preventDefault();
+    setPending(true);
+    setMessage("");
+    try {
+      const mode = READ_KINDS.has(kind) ? "READ" : live ? "LIVE" : "DRY_RUN";
+      const payload = payloadFor(kind, text);
+      let confirmationNonce;
+      if (mode === "LIVE") {
+        const confirmation = await fetch("/api/control/confirmations", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ kind, mode, account: "main", payload }),
+        });
+        const confirmationBody = await confirmation.json();
+        if (!confirmation.ok || !confirmationBody.ok) throw new Error(confirmationBody.error || "Подтверждение отклонено");
+        confirmationNonce = confirmationBody.nonce;
+      }
+      const response = await fetch("/api/control/commands", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind,
+          mode,
+          account: "main",
+          payload,
+          idempotency_key: crypto.randomUUID(),
+          confirmation_nonce: confirmationNonce,
+        }),
+      });
+      const body = await response.json();
+      if (!response.ok || !body.ok) throw new Error(body.error || "Команда не принята");
+      setMessage(body.idempotent ? "Такая команда уже есть в очереди" : `Команда ${body.command_id} поставлена в очередь`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Команда не принята");
+    } finally {
+      setPending(false);
     }
-
-    onSubmit(command);
-  };
+  }
 
   return (
-    <div style={{
-      background: 'var(--tg-theme-secondary-bg-color, #121722)',
-      border: '1px solid #2a3548',
-      borderRadius: 12,
-      padding: 16,
-      margin: 12,
-    }}>
-      <h3 style={{ margin: '0 0 12px', fontSize: 16, color: '#7fd1ff' }}>Конфигурация рассылки</h3>
-
-      <div style={{ marginBottom: 12 }}>
-        <label style={{ display: 'block', fontSize: 12, color: '#8b98a9', marginBottom: 4 }}>Текст сообщения</label>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          rows={3}
-          style={{
-            width: '100%',
-            background: '#0b0e14',
-            color: '#dbe2ea',
-            border: '1px solid #2a3548',
-            borderRadius: 8,
-            padding: 8,
-            fontFamily: 'inherit',
-          }}
-        />
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12, marginBottom: 12 }}>
-        <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#8b98a9', marginBottom: 4 }}>Задержка мин (с)</label>
-          <input
-            type="number"
-            value={delayMin}
-            onChange={(e) => setDelayMin(e.target.value)}
-            style={{
-              width: '100%',
-              background: '#0b0e14',
-              color: '#dbe2ea',
-              border: '1px solid #2a3548',
-              borderRadius: 8,
-              padding: 8,
-            }}
-          />
-        </div>
-        <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#8b98a9', marginBottom: 4 }}>Задержка макс (с)</label>
-          <input
-            type="number"
-            value={delayMax}
-            onChange={(e) => setDelayMax(e.target.value)}
-            style={{
-              width: '100%',
-              background: '#0b0e14',
-              color: '#dbe2ea',
-              border: '1px solid #2a3548',
-              borderRadius: 8,
-              padding: 8,
-            }}
-          />
-        </div>
-        <div>
-          <label style={{ display: 'block', fontSize: 12, color: '#8b98a9', marginBottom: 4 }}>Лимит</label>
-          <input
-            type="number"
-            value={limit}
-            onChange={(e) => setLimit(e.target.value)}
-            style={{
-              width: '100%',
-              background: '#0b0e14',
-              color: '#dbe2ea',
-              border: '1px solid #2a3548',
-              borderRadius: 8,
-              padding: 8,
-            }}
-          />
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#dbe2ea', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={repeatOk}
-            onChange={(e) => setRepeatOk(e.target.checked)}
-            style={{ accentColor: '#7fd1ff' }}
-          />
-          Повторно тем же пользователям
+    <form className="panel" onSubmit={submit}>
+      <h2>Управление</h2>
+      <label>
+        Команда
+        <select value={kind} onChange={(event) => setKind(event.target.value)}>
+          {["STATUS", "GROUPS", "CAMPAIGNS", "MEDIA_LIST", "BROADCAST", "DMSEND", "CONDUCT", "BLACKLIST_ADD", "STOP"].map((item) => (
+            <option key={item} value={item}>{item}</option>
+          ))}
+        </select>
+      </label>
+      {!READ_KINDS.has(kind) && kind !== "STOP" && (
+        <label>
+          {kind === "BLACKLIST_ADD" ? "ID или ник" : "Текст"}
+          <textarea value={text} onChange={(event) => setText(event.target.value)} rows={3} />
         </label>
-      </div>
-
-      <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: 12 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#dbe2ea', cursor: 'pointer' }}>
-          <input
-            type="checkbox"
-            checked={dryRun}
-            onChange={(e) => setDryRun(e.target.checked)}
-            style={{ accentColor: '#7fd1ff' }}
-          />
-          Режим предпросмотра (без отправки)
+      )}
+      {delivery && (
+        <label>
+          <input type="checkbox" checked={live} onChange={(event) => setLive(event.target.checked)} />
+          LIVE: реальная отправка после подтверждения
         </label>
-      </div>
-
-      <button
-        onClick={handleSubmit}
-        style={{
-          width: '100%',
-          padding: '12px',
-          borderRadius: 10,
-          border: '0',
-          background: dryRun ? '#2f81f7' : '#123524',
-          color: '#fff',
-          fontWeight: 600,
-          fontSize: 14,
-          cursor: 'pointer',
-        }}
-      >
-        {dryRun ? 'Предпросмотр (dry-run)' : 'Запустить рассылку'}
-      </button>
-    </div>
+      )}
+      <button type="submit" disabled={pending}>{pending ? "Отправка…" : live && delivery ? "Подтвердить и запустить" : "Поставить в очередь"}</button>
+      {message && <p role="status">{message}</p>}
+    </form>
   );
 }

@@ -18,7 +18,6 @@ from control.models import (
     ConductPayload,
     DmSendPayload,
     TelegramIdentity,
-    ValidatedCommand,
 )
 
 # --- 재사емые константы ---
@@ -89,6 +88,11 @@ class CommandPolicy:
             return {"ok": False, "error": "недостаточно прав"}
 
         # Проверка kind/mode сочетаний
+        if request.kind in READ_ONLY_KINDS and request.mode != CommandMode.READ:
+            return {"ok": False, "error": "read-only команда требует режим READ"}
+        if request.kind in LIVE_REQUIRES_CONFIRMATION and request.mode == CommandMode.READ:
+            return {"ok": False, "error": "команда доставки не может быть READ"}
+
         if request.mode == CommandMode.LIVE and request.kind in LIVE_REQUIRES_CONFIRMATION:
             if not request.confirmation_nonce:
                 return {
@@ -160,17 +164,3 @@ class CommandPolicy:
     @classmethod
     def account_alias(cls, internal_name: str) -> str:
         return Redactor.redact_account_name(internal_name)
-
-
-class ValidatedCommand:
-    """Результат успешной валидации, готовый к enqueue."""
-
-    def __init__(
-        self,
-        identity: TelegramIdentity,
-        request: CommandPayload,
-        validated: dict,
-    ) -> None:
-        self.identity = identity
-        self.request = request
-        self.validated = validated

@@ -186,7 +186,16 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['tb_blacklist'] loop
+  foreach t in array array['tb_accounts', 'tb_groups', 'tb_campaigns', 'tb_sent', 'tb_blacklist', 'tb_stats', 'control_commands', 'control_command_events', 'control_confirmations'] loop
+    execute format('alter table if exists %I enable row level security', t);
+    execute format('alter table if exists %I force row level security', t);
     execute format('drop policy if exists anon_read on %I', t);
+    execute format('drop policy if exists service_all on %I', t);
+    execute format('create policy service_all on %I for all to service_role using (true) with check (true)', t);
+    execute format('revoke all on table %I from public, anon, authenticated', t);
+    execute format('grant select, insert, update, delete on table %I to service_role', t);
   end loop;
 end $$;
+
+update tb_accounts set api_id = null where api_id is not null;
+update tb_blacklist set username = null where username is not null;

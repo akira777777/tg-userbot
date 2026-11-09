@@ -1,5 +1,5 @@
 import { requireOwnerSession } from "../../../../lib/control-auth";
-import { enqueueCommand, listCommands, requiresConfirmation } from "../../../../lib/control-queue";
+import { commandRejection, enqueueCommand, listCommands, requiresConfirmation } from "../../../../lib/control-queue";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +45,9 @@ export async function POST(request) {
   if (!kind || !VALID_KINDS.has(kind) || !["READ", "DRY_RUN", "LIVE"].includes(mode) || !idempotencyKey) {
     return Response.json({ ok: false, error: "некорректные поля команды" }, { status: 400 });
   }
+
+  const rejected = commandRejection(kind, mode);
+  if (rejected) return Response.json({ ok: false, error: rejected }, { status: 400 });
 
   if (requiresConfirmation(kind, mode) && !confirmationNonce) {
     return Response.json({ ok: false, error: "LIVE режим требует confirmation_nonce" }, { status: 400 });

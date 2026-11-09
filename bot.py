@@ -15,6 +15,7 @@ import argparse
 import asyncio
 import collections
 import csv
+import json
 import mimetypes
 import os
 import random
@@ -30,6 +31,8 @@ ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("USERBOT_DB", ROOT / "userbot.db"))
 SESSION_DIR = Path(os.environ.get("USERBOT_SESSIONS", ROOT / "sessions"))
 MEDIA_DIR = Path(os.environ.get("USERBOT_MEDIA", ROOT / "media_cache"))
+SECRETS_PATH = Path(os.environ.get("USERBOT_SECRETS", ROOT / "account-secrets.json"))
+STOP_PATH = Path(os.environ.get("USERBOT_STOP", ROOT / "control-stop.json"))
 ACCOUNTS_RE = re.compile(r"^[a-z0-9_\-]{1,32}$")
 LEGACY_SESSION = os.environ.get("USERBOT_SESSION", str(ROOT / "userbot.session"))
 STOP_RE = re.compile(r"^(stop|opt.?out|unsubscribe|отпиш|отпис|стоп)", re.I)
@@ -152,6 +155,67 @@ def today_dm_sent(conn, account):
         (account, now_iso()[:10] + "T00:00:00")).fetchone()["c"]
 
 
+def load_account_secrets():
+    if not SECRETS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SECRETS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_account_secrets(data):
+    SECRETS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SECRETS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        os.chmod(SECRETS_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def persist_account_secret(name, api_id, api_hash):
+    data = load_account_secrets()
+    current = data.get(name, {})
+    if api_id:
+        current["api_id"] = str(api_id)
+    if api_hash:
+        current["api_hash"] = str(api_hash)
+    if current:
+        data[name] = current
+    elif name in data:
+        del data[name]
+    save_account_secrets(data)
+
+
+def migrate_plaintext_secret(conn, account, row):
+    if not row or not (row["api_id"] or row["api_hash"]):
+        return
+    persist_account_secret(account, row["api_id"], row["api_hash"])
+    conn.execute("UPDATE accounts SET api_id=NULL, api_hash=NULL WHERE name=?", (account,))
+    conn.commit()
+
+
+def stop_requested(account, started_at):
+    if not STOP_PATH.exists():
+        return False
+    try:
+        data = json.loads(STOP_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if str(data.get("at") or "") <= started_at:
+        return False
+    targets = data.get("accounts") or []
+    return "all" in targets or account in targets
+
+
+def request_stop(account):
+    STOP_PATH.write_text(
+        json.dumps({"accounts": [account or "all"], "at": now_iso()}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 def get_client(account="main", allow_flood=False):
     load_env()
     if not ACCOUNTS_RE.fullmatch(account):
@@ -165,8 +229,8 @@ def get_client(account="main", allow_flood=False):
         flood_guard(conn, account)
     session = (row["session"] if row and row["session"]
                else str(SESSION_DIR / f"{account}.session"))
-    # приоритет секретов: колонки реестра > env API_ID_<NAME> / API_ID_<число из имени>
-    # (work2 -> API_ID_WORK2, затем API_ID_2) > общий API_ID из .env
+    migrate_plaintext_secret(conn, account, row)
+    # приоритет секретов: файл account-secrets.json > env API_ID_<NAME> > общий API_ID
     tag = re.sub(r"[^A-Z0-9_]", "_", account.upper())
     m = re.search(r"(\d+)$", account)
     digit = m.group(1) if m else None
@@ -179,10 +243,9 @@ def get_client(account="main", allow_flood=False):
                 return v
         return None
 
-    api_id = (row["api_id"] if row and row["api_id"]
-              else _env_secret("API_ID") or ENV.get("API_ID"))
-    api_hash = (row["api_hash"] if row and row["api_hash"]
-                else _env_secret("API_HASH") or ENV.get("API_HASH"))
+    stored = load_account_secrets().get(account, {})
+    api_id = stored.get("api_id") or _env_secret("API_ID") or ENV.get("API_ID")
+    api_hash = stored.get("api_hash") or _env_secret("API_HASH") or ENV.get("API_HASH")
     conn.close()
     if not api_id or not api_hash:
         sys.exit("Нет API_ID/API_HASH. Заведи приложение на my.telegram.org и "
@@ -466,7 +529,11 @@ async def send_run(client, conn, kind, targets, text, args, resolve, account="ma
     conn.commit()
     done = ok = 0
     halt = False
+    started_at = now_iso()
     for target in targets:
+        if stop_requested(account, started_at):
+            print(f"  остановка запрошена для «{account}»")
+            break
         label, peer, key = resolve(target)
         if args.dry_run:
             print(f"  [dry] -> {label}")
@@ -648,8 +715,8 @@ def cmd_accounts(args):
         import getpass
         api_id = getpass.getpass(f"api_id для «{name}» (пусто = общий .env): ").strip()
         api_hash = getpass.getpass(f"api_hash для «{name}»: ").strip()
-        conn.execute("UPDATE accounts SET api_id=?, api_hash=? WHERE name=?",
-                     (api_id or None, api_hash or None, name))
+        persist_account_secret(name, api_id, api_hash)
+        conn.execute("UPDATE accounts SET api_id=NULL, api_hash=NULL WHERE name=?", (name,))
     elif op == "budget":
         n = int(args.value)
         if not (0 <= n <= 500):
@@ -994,8 +1061,7 @@ async def cmd_align(args):
         print("[dry] затем: privacy (единый набор) + probe (права)")
         await client.disconnect()
         return
-    from telethon.errors import (FloodWaitError, UserAlreadyJoinedError,
-                                 UsernameNotPresentError)
+    from telethon.errors import FloodWaitError, UserAlreadyJoinedError
     joined = 0
     for r in missing[:args.limit]:
         try:
@@ -1060,7 +1126,7 @@ async def cmd_compare(args):
     only_a = ea - eb
     only_b = eb - ea
     if only_a:
-        t = conn.execute("SELECT title FROM groups WHERE id IN (%s)" %
+        t = conn.execute("SELECT title FROM groups WHERE id IN (%s)" %  # nosec B608
                          ",".join("?" * len(only_a)), list(only_a)).fetchall()
         print(f"  только в «{a}» ({len(only_a)}): " + "; ".join(x["title"][:30] for x in t[:8]))
         print(f"  → догнать: bot.py align --account {b}")
@@ -1155,6 +1221,12 @@ def cmd_status(args):
         "SELECT COUNT(*) c FROM members m WHERE m.is_bot=0 AND m.user_id "
         f"NOT IN (SELECT user_id FROM blacklist) AND {NOT_YET_DMED}").fetchone()["c"]
     print(f"  доступных для новых DM: {free}")
+
+
+def cmd_stop(args):
+    account = args.account or "all"
+    request_stop(account)
+    print(f"остановка запрошена: {account}")
 
 
 def cmd_blacklist(args):
@@ -1329,11 +1401,15 @@ async def cmd_conduct(args):
     pool = collections.deque(rows)
     deadline = _t.monotonic() + args.window * 3600
     stats = {"ok": 0, "fail": 0}
+    started_at = now_iso()
 
     async def worker(name):
         p = players[name]
         rot = 0
         while pool and _t.monotonic() < deadline:
+            if stop_requested(name, started_at) or stop_requested("all", started_at):
+                print(f"  остановка запрошена для «{name}»")
+                return
             rem = cooldown_remaining(p)
             if rem:
                 await asyncio.sleep(min(rem + 1, 120))
@@ -1529,6 +1605,10 @@ def build_parser():
     p.add_argument("--limit", type=int, default=30,
                    help="pull: сколько последних сообщений Избранного просмотреть")
     p.set_defaults(func=cmd_media)
+
+    p = sub.add_parser("stop", help="остановить выполняемую рассылку аккаунта или всех аккаунтов")
+    p.add_argument("--account", default="all")
+    p.set_defaults(func=cmd_stop)
 
     p = sub.add_parser("cloud", help="облачное зеркало Supabase: push|status|test")
     p.add_argument("op", choices=["push", "status", "test"])

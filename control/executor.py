@@ -17,12 +17,9 @@ from typing import Any
 from control.account_alias import AccountAliasMapper
 from control.config import ControlSettings
 from control.models import (
-    BroadcastPayload,
     CommandKind,
+    CommandMode,
     CommandRecord,
-    CommandStatus,
-    ConductPayload,
-    DmSendPayload,
 )
 from control.privacy_forward import ForwardPrivacyManager
 
@@ -47,7 +44,7 @@ class UserbotRuntime:
         self._alias_mapper.register(account)
 
         # Формируем argv для bot.py
-        argv = self._build_argv(kind, payload, account)
+        argv = self._build_argv(kind, payload, account, record.request.mode)
         if argv is None:
             return {
                 "ok": False,
@@ -92,10 +89,12 @@ class UserbotRuntime:
     def _build_argv(
         self,
         kind: CommandKind,
-        payload: BroadcastPayload | DmSendPayload | ConductPayload,
+        payload: Any,
         account: str,
+        mode: CommandMode = CommandMode.DRY_RUN,
     ) -> list[str] | None:
         """Переводит типизированный payload в argv bot.py."""
+        data = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload or {})
         if kind == CommandKind.STATUS:
             return ["status", "--account", account]
         if kind == CommandKind.GROUPS:
@@ -104,70 +103,62 @@ class UserbotRuntime:
             return ["status", "--account", account]
         if kind == CommandKind.MEDIA_LIST:
             return ["media", "list", "--account", account]
-        if kind == CommandKind.BROADCAST:
-            if not isinstance(payload, BroadcastPayload):
+        if kind == CommandKind.BLACKLIST_ADD:
+            value = str(data.get("value") or "").strip()
+            if not value:
                 return None
-            args = ["broadcast", "--account", account]
-            if payload.text:
-                args += ["--text", payload.text]
-            if payload.media_id:
-                args += ["--media", str(payload.media_id)]
-            if payload.group_ids:
-                args += ["--ids"] + [str(g) for g in payload.group_ids]
-            if payload.delay_min > 0:
-                args += ["--delay-min", str(payload.delay_min)]
-            if payload.delay_max > 0:
-                args += ["--delay-max", str(payload.delay_max)]
-            if payload.max_runs > 0:
-                args += ["--max-runs", str(payload.max_runs)]
-            args += ["--dry-run"]  # по умолчанию dry-run
-            return args
-        if kind == CommandKind.DMSEND:
-            if not isinstance(payload, DmSendPayload):
-                return None
-            args = ["dmsend", "--account", account]
-            if payload.text:
-                args += ["--text", payload.text]
-            if payload.media_id:
-                args += ["--media", str(payload.media_id)]
-            if payload.group_id:
-                args += ["--group", str(payload.group_id)]
-            args += ["--limit", str(payload.limit)]
-            if payload.delay_min > 0:
-                args += ["--delay-min", str(payload.delay_min)]
-            if payload.delay_max > 0:
-                args += ["--delay-max", str(payload.delay_max)]
-            if payload.repeat_ok:
-                args += ["--repeat-ok"]
-            args += ["--dry-run"]
-            return args
-        if kind == CommandKind.CONDUCT:
-            if not isinstance(payload, ConductPayload):
-                return None
-            args = ["conduct", "--what", payload.kind, "--account", account]
-            if payload.text:
-                args += ["--text", payload.text]
-            if payload.media_id:
-                args += ["--media", str(payload.media_id)]
-            if payload.group_ids:
-                args += ["--ids"] + [str(g) for g in payload.group_ids]
-            if payload.group_id:
-                args += ["--group", str(payload.group_id)]
-            if payload.limit > 0:
-                args += ["--limit", str(payload.limit)]
-            if payload.window_hours > 0:
-                args += ["--window", str(payload.window_hours)]
-            if payload.repeat_ok:
-                args += ["--repeat-ok"]
-            args += ["--dry-run"]
-            return args
+            return ["blacklist", "add", value, "--reason", str(data.get("reason") or "вручную")]
         if kind == CommandKind.STOP:
-            if isinstance(payload, dict):
-                args = ["stop"]
-                if payload.get("command_id"):
-                    args += ["--command-id", str(payload["command_id"])]
-                if payload.get("account") and payload["account"] != "all":
-                    args += ["--account", str(payload["account"])]
-                return args
-            return None
+            args = ["stop"]
+            target = data.get("account") or account
+            if target:
+                args += ["--account", str(target)]
+            return args
+        if kind == CommandKind.BROADCAST:
+            args = ["broadcast", "--account", account]
+            self._append_delivery_args(args, data)
+            return self._with_mode(args, mode)
+        if kind == CommandKind.DMSEND:
+            args = ["dmsend", "--account", account, "--limit", str(data.get("limit") or 20)]
+            self._append_delivery_args(args, data)
+            if data.get("group_id"):
+                args += ["--group", str(data["group_id"])]
+            if data.get("repeat_ok"):
+                args += ["--repeat-ok"]
+            return self._with_mode(args, mode)
+        if kind == CommandKind.CONDUCT:
+            if data.get("kind") not in {"broadcast", "dm"}:
+                return None
+            args = ["conduct", "--what", data["kind"]]
+            self._append_delivery_args(args, data)
+            if data.get("group_id"):
+                args += ["--group", str(data["group_id"])]
+            if data.get("limit"):
+                args += ["--limit", str(data["limit"])]
+            if data.get("window_hours"):
+                args += ["--window", str(data["window_hours"])]
+            if data.get("repeat_ok"):
+                args += ["--repeat-ok"]
+            return self._with_mode(args, mode)
         return None
+
+    @staticmethod
+    def _append_delivery_args(args: list[str], data: dict) -> None:
+        if data.get("text"):
+            args += ["--text", str(data["text"])]
+        if data.get("media_id"):
+            args += ["--media", str(data["media_id"])]
+        if data.get("group_ids"):
+            args += ["--ids", *[str(group_id) for group_id in data["group_ids"]]]
+        if data.get("delay_min"):
+            args += ["--delay-min", str(data["delay_min"])]
+        if data.get("delay_max"):
+            args += ["--delay-max", str(data["delay_max"])]
+        if data.get("max_runs"):
+            args += ["--max-runs", str(data["max_runs"])]
+
+    @staticmethod
+    def _with_mode(args: list[str], mode: CommandMode) -> list[str]:
+        if mode != CommandMode.LIVE:
+            args += ["--dry-run"]
+        return args

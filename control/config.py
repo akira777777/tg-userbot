@@ -20,6 +20,13 @@ def _required(name: str) -> str:
     return value
 
 
+def _session_secret() -> str:
+    value = os.environ.get("CONTROL_SESSION_SECRET", "").strip()
+    if len(value) < 32 or value == "change-me-in-production":
+        raise ConfigurationError("CONTROL_SESSION_SECRET must be a random value of at least 32 characters")
+    return value
+
+
 def _owner_ids(value: str) -> frozenset[int]:
     try:
         ids = frozenset(int(item.strip()) for item in value.split(",") if item.strip())
@@ -44,7 +51,7 @@ class ControlSettings:
     forward_privacy: bool = True
     api_host: str = "127.0.0.1"
     api_port: int = 8741
-    session_secret: str = "change-me-in-production"
+    session_secret: str = ""
     session_ttl_minutes: int = 30
 
     def model_redacted(self) -> dict:
@@ -83,6 +90,6 @@ class ControlSettings:
             forward_privacy=os.environ.get("FORWARD_PRIVACY", "1") == "1",
             api_host=os.environ.get("API_HOST", "127.0.0.1"),
             api_port=int(os.environ.get("API_PORT", "8741")),
-            session_secret=os.environ.get("CONTROL_SESSION_SECRET", "change-me-in-production"),
+            session_secret=_session_secret(),
             session_ttl_minutes=int(os.environ.get("SESSION_TTL_MINUTES", "30")),
         )

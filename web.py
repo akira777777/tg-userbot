@@ -12,6 +12,7 @@ DB-задачи (export/status/blacklist/accounts) идут в отдельны�
 """
 import asyncio
 import collections
+import hmac
 import json
 import os
 import re
@@ -445,6 +446,24 @@ def read_state():
         con.close()
 
 
+def _web_token():
+    return os.environ.get("WEB_TOKEN", "").strip()
+
+
+def _write_authorized(request):
+    expected = _web_token()
+    presented = request.headers.get("X-Web-Token", "")
+    return len(expected) >= 16 and hmac.compare_digest(presented, expected)
+
+
+def _reject_write(request):
+    if _write_authorized(request):
+        return None
+    if len(_web_token()) < 16:
+        return web.json_response({"error": "WEB_TOKEN is not configured"}, status=503)
+    return web.json_response({"error": "unauthorized"}, status=401)
+
+
 async def api_state(request):
     st = read_state()
     if "error" in st:
@@ -453,6 +472,9 @@ async def api_state(request):
 
 
 async def api_run(request):
+    denied = _reject_write(request)
+    if denied:
+        return denied
     try:
         p = await request.json()
     except (json.JSONDecodeError, Exception) as e:
@@ -463,6 +485,9 @@ async def api_run(request):
 
 async def api_fanout(request):
     """Запустить действие сразу на всех включённых аккаунтах (по слоту на аккаунт)."""
+    denied = _reject_write(request)
+    if denied:
+        return denied
     try:
         p = await request.json()
     except Exception:
@@ -487,6 +512,9 @@ async def api_fanout(request):
 
 
 async def api_stop(request):
+    denied = _reject_write(request)
+    if denied:
+        return denied
     try:
         p = await request.json()
     except Exception:
@@ -549,6 +577,9 @@ async def api_media_file(request):
 
 async def api_media_upload(request):
     """multipart upload -> tmp в media_cache -> media add (в «Избранное» + кэш)."""
+    denied = _reject_write(request)
+    if denied:
+        return denied
     data = await request.post()
     up = data.get("file")
     if up is None or not hasattr(up, "file"):
@@ -609,6 +640,19 @@ async def api_stream(request):
     return resp
 
 
+def build_app():
+    app = web.Application(client_max_size=400 * 1024 * 1024)
+    app.router.add_get("/", page_index)
+    app.router.add_get("/api/state", api_state)
+    app.router.add_post("/api/run", api_run)
+    app.router.add_post("/api/fanout", api_fanout)
+    app.router.add_post("/api/stop", api_stop)
+    app.router.add_get("/api/media/{mid}/file", api_media_file)
+    app.router.add_post("/api/media/upload", api_media_upload)
+    app.router.add_get("/api/stream", api_stream)
+    return app
+
+
 def main():
     # косметика CPython 3.14/Windows: при разрыве SSE-соединений proactor-цикл
     # печатает безобидный ConnectionResetError в exception handler — глушим только его
@@ -621,15 +665,7 @@ def main():
             return not (is_rst and "_call_connection_lost" in str(rec.getMessage()))
     logging.getLogger("asyncio").addFilter(_NoiseFilter())
 
-    app = web.Application(client_max_size=400 * 1024 * 1024)  # до 400 МБ на загрузку
-    app.router.add_get("/", page_index)
-    app.router.add_get("/api/state", api_state)
-    app.router.add_post("/api/run", api_run)
-    app.router.add_post("/api/fanout", api_fanout)
-    app.router.add_post("/api/stop", api_stop)
-    app.router.add_get("/api/media/{mid}/file", api_media_file)
-    app.router.add_post("/api/media/upload", api_media_upload)
-    app.router.add_get("/api/stream", api_stream)
+    app = build_app()
     print(f"Панель: http://{HOST}:{PORT}  (Ctrl+C — остановить)")
     web.run_app(app, host=HOST, port=PORT, print=None)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -78,6 +79,50 @@ async def test_lost_lease_does_not_run_command():
     worker._runtime = runtime
     await worker._process(_record())
     assert runtime.calls == 0
+    assert worker._queue.completed == []
+
+
+@pytest.mark.asyncio
+async def test_policy_rejects_non_owner_before_execution():
+    worker = ControlWorker(_settings())
+    runtime = _Runtime()
+    worker._queue = _Queue(LeaseRenewal(version=2, lease_expires_at=None))
+    worker._runtime = runtime
+    record = _record()
+    record = record.model_copy(update={"requested_by": 99})
+    await worker._process(record)
+    assert runtime.calls == 0
+    assert worker._queue.completed[0]["error_code"] == "policy"
+    assert worker._queue.completed[0]["result_summary"]["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_lost_lease_during_execution_does_not_complete():
+    worker = ControlWorker(_settings())
+    worker._lease_renew_interval = 0.01
+
+    class _SlowRuntime(_Runtime):
+        async def run_command(self, _record):
+            await asyncio.sleep(0.05)
+            self.calls += 1
+            return {"ok": True, "output": "done", "redacted_account": "Аккаунт 1"}
+
+    class _LosingQueue(_Queue):
+        def __init__(self) -> None:
+            super().__init__(LeaseRenewal(version=2, lease_expires_at=None))
+            self.renewals = 0
+
+        def renew_lease(self, **kwargs):
+            self.renewals += 1
+            if self.renewals == 1:
+                return super().renew_lease(**kwargs)
+            return None
+
+    runtime = _SlowRuntime()
+    worker._runtime = runtime
+    worker._queue = _LosingQueue()
+    await worker._process(_record())
+    assert runtime.calls == 1
     assert worker._queue.completed == []
 
 

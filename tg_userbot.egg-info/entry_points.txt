@@ -1,0 +1,4 @@
+[console_scripts]
+tg-userbot = bot:main
+tg-userbot-cloud = cloud:main
+tg-userbot-control = control.main:main

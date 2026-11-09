@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import Enum
 from typing import Literal
@@ -52,17 +53,6 @@ class TelegramIdentity(BaseModel):
     first_name: str | None = None
     auth_date: datetime
     query_id: str | None = None
-
-
-class AccountName(str):
-    @field_validator("@classmethod")
-    @classmethod
-    def _validate(cls, v: str) -> str:
-        import re
-
-        if not re.fullmatch(r"^[a-z0-9_\-]{1,32}$", v or ""):
-            raise ValueError("account name: только a-z 0-9 _ - (до 32)")
-        return v
 
 
 class ReadPayload(BaseModel):
@@ -137,7 +127,7 @@ class CommandPayload(BaseModel):
     kind: CommandKind
     mode: CommandMode
     account: str = Field(default="main", pattern=r"^[a-z0-9_\-]{1,32}$")
-    payload: BroadcastPayload | DmSendPayload | ConductPayload | ReadPayload | BlacklistAddPayload | StopPayload
+    payload: ReadPayload | BlacklistAddPayload | StopPayload | BroadcastPayload | DmSendPayload | ConductPayload
     idempotency_key: UUID = Field(default_factory=uuid4)
     confirmation_nonce: UUID | None = None
 
@@ -163,9 +153,22 @@ class CommandRecord(BaseModel):
     claimed_at: datetime | None = None
     finished_at: datetime | None = None
     lease_expires_at: datetime | None = None
-    result_summary: str | None = None
+    result_summary: dict | None = None
     error_code: str | None = None
     version: int = 0
+
+    @field_validator("result_summary", mode="before")
+    @classmethod
+    def _typed_result(cls, value):
+        if value is None or isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {"text": value}
+            return parsed if isinstance(parsed, dict) else {"text": value}
+        return {"text": str(value)}
 
 
 class CommandEvent(BaseModel):

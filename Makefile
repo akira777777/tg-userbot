@@ -1,117 +1,46 @@
-.PHONY: help install dev test lint format docs build run clean
+.PHONY: help install test lint format run worker controller healthcheck docker-build docker-up docker-down clean
 
-## ============ ПОМОЩЬ ============
+PYTHON ?= python
+SOURCES = bot.py cloud.py web.py control tests scripts/healthcheck.py
+
 help:
-	@echo "=== tg-userbot — Makefile ==="
-	@echo ""
-	@echo "Основные команды:"
-	@echo "  make install     — установить зависимости (pip install -e '.[dev]')"
-	@echo "  make dev         — запуск отладочного сервера (fastapi dev src/tg_userbot/main:app)"
-	@echo "  make test        — запуск тестов (pytest tests/ -v --cov)"
-	@echo "  make lint        — линтинг (ruff check src/tg_userbot)"
-	@echo "  make format      — форматирование (black src/ ruff format src/)"
-	@echo "  make docs        — сборка документации (mkdocs serve)"
-	@echo "  make build       — сборка проекта (python -m build)"
-	@echo "  make run         — запуск в production (gunicorn src/tg_userbot.main:app)"
-	@echo "  make clean       — очистка кэша (rm -rf .venv dist/ build/ .eggs/)"
-	@echo ""
-	@echo "Команды тестирования:"
-	@echo "  make test-cov    — тесты с покрытием (pytest tests/ -v --cov)"
-	@echo "  make test-fast   — быстрый тест (pytest tests/ -v -x -k 'fast')"
-	@echo ""
-	@echo "Команды разработки:"
-	@echo "  make lint        — линтинг (ruff check src/)"
-	@echo "  make format      — форматирование (black src/ ruff format src/)"
-	@echo "  make docs        — документация (mkdocs serve)"
-	@echo ""
-	@echo "Команды деплоя:"
-	@echo "  make docker-build    — сборка Docker-образа"
-	@echo "  make docker-run      — запуск в Docker"
-	@echo "  make docker-up       — запуск docker-compose"
-	@echo "  make docker-down     — остановка docker-compose"
-	@echo ""
-	@echo "Команды БД:"
-	@echo "  make db-up          — запуск БД (docker-compose -f docker-compose.db.yml up)"
-	@echo "  make db-migrate     — миграция БД (alembic upgrade head)"
-	@echo "  make db-seed        — заполнение тестовыми данными"
-	@echo "  make db-clean       — сброс БД (alembic downgrade -1)"
-	@echo ""
-	@echo "Команды чистки:"
-	@echo "  make clean          — очистка кэша (.venv, dist/, build/, .eggs/)"
-	@echo "  make clean-all      — полная очистка (.venv, htmlcov/, .coverage, *.egg-info)"
+	@echo "tg-userbot targets: install test lint format run worker controller healthcheck docker-build docker-up docker-down"
 
-## ============ ОСНОВНЫЕ КОМАНДЫ ============
 install:
-	pip install -e ".[dev]"
-	black src/ tests/
-	ruff check src/ tests/ --fix
-
-dev:
-	fastapi dev src/tg_userbot/main:app --reload
-
-test:
-	pytest tests/ -v --cov
-
-test-cov:
-	pytest tests/ -v --cov --cov-report=html --cov-report=term-missing
-
-test-fast:
-	pytest tests/ -v -x -k "fast"
-
-lint:
-	ruff check src/ tests/
-	mypy src/
-
-format:
-	black src/ tests/
-	ruff format src/ tests/
-
-docs:
-	mkdocs serve
-
-build:
-	python -m build
+	$(PYTHON) -m pip install -e ".[dev]"
 
 run:
-	gunicorn -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 src/tg_userbot.main:app
+	$(PYTHON) bot.py --help
 
-clean:
-	rm -rf .venv dist/ build/ .eggs/ *.egg-info
+worker:
+	$(PYTHON) -m control.main worker
 
-clean-all:
-	rm -rf .venv htmlcov/ .coverage .pytest_cache/ __pycache__ */__pycache__ */*/__pycache__ dist/ build/ *.egg-info
+controller:
+	$(PYTHON) -m control.main telegram-bot
 
-## ============ DOCKER ============
+healthcheck:
+	$(PYTHON) scripts/healthcheck.py --db userbot.db
+
+test:
+	$(PYTHON) -m pytest tests/
+	cd dashboard && npm test -- --run
+
+lint:
+	$(PYTHON) -m ruff check $(SOURCES)
+	$(PYTHON) -m bandit -q -ll -r bot.py cloud.py web.py control scripts/healthcheck.py
+
+format:
+	$(PYTHON) -m black $(SOURCES)
+	$(PYTHON) -m ruff check --fix $(SOURCES)
+
 docker-build:
-	docker build -t tg-userbot:latest .
-
-docker-run:
-	docker run -d --name tg-userbot \
-		-p 8000:8000 \
-		-e TG_BOT_TOKEN=$(cat .env | grep TG_BOT_TOKEN | cut -d'=' -f2) \
-		-e SUPABASE_URL=$(cat .env | grep SUPABASE_URL | cut -d'=' -f2) \
-		-e SUPABASE_ANON_KEY=$(cat .env | grep SUPABASE_ANON_KEY | cut -d'=' -f2) \
-		tg-userbot:latest
+	docker build --target prod -t tg-userbot:latest .
 
 docker-up:
-	docker-compose up -d
+	docker compose up -d
 
 docker-down:
-	docker-compose down
+	docker compose down
 
-## ============ БАЗА ДАННЫХ ============
-db-up:
-	docker-compose -f docker-compose.db.yml up -d
-
-db-migrate:
-	alembic upgrade head
-
-db-seed:
-	python scripts/db-seed.py
-
-db-clean:
-	alembic downgrade -1
-
-## ============ ВЕРСИОНирование ============
-version:
-	@echo "Версия проекта: $(shell git describe --tags --always --dirty=+)"
+clean:
+	rm -rf dist build htmlcov .coverage .pytest_cache .ruff_cache *.egg-info
