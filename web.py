@@ -630,21 +630,6 @@ def main():
     app.router.add_post("/api/media/upload", api_media_upload)
     app.router.add_get("/api/stream", api_stream)
     print(f"Панель: http://{HOST}:{PORT}  (Ctrl+C — остановить)")
-    # #region agent log
-    try:
-        _st = read_state()
-        with open(ROOT / ".cursor" / "debug-1887e6.log", "a", encoding="utf-8") as _f:
-            _f.write(json.dumps({
-                "sessionId": "1887e6", "runId": "pre-fix", "hypothesisId": "E",
-                "location": "web.py:main", "message": "panel reloaded",
-                "data": {"dm_available": _st.get("dm_available"), "groups": _st.get("groups"),
-                         "active_groups": _st.get("active_groups"), "boot": BOOT,
-                         "error": _st.get("error")},
-                "timestamp": int(time.time() * 1000),
-            }, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-    # #endregion
     web.run_app(app, host=HOST, port=PORT, print=None)
 
 

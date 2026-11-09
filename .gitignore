@@ -30,6 +30,7 @@ dashboard/node_modules/
 dashboard/coverage/
 
 # Инструменты и артефакты
+.cursor/debug-*.log
 .serena/
 .claude-flow/
 .control_state/
