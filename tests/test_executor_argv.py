@@ -54,7 +54,8 @@ def _record(kind: CommandKind, mode: CommandMode, payload, account: str = "main"
 def test_read_only_commands_do_not_send():
     runtime = _runtime()
     expected = {
-        CommandKind.STATUS: ["status", "--account", "main"],
+        CommandKind.STATUS: ["status"],
+        CommandKind.CAMPAIGNS: ["status"],
         CommandKind.GROUPS: ["groups", "--list", "--account", "main"],
         CommandKind.MEDIA_LIST: ["media", "list", "--account", "main"],
     }
@@ -121,6 +122,27 @@ def test_delivery_mode_controls_dry_run():
         assert argv[-1] == "--dry-run"
     assert live_argv is not None
     assert "--dry-run" not in live_argv
+    assert conduct is not None and "--accounts" in conduct and "main" in conduct
+
+
+def test_conduct_targets_named_account_only():
+    runtime = _runtime()
+    pinned = runtime._build_argv(
+        CommandKind.CONDUCT,
+        ConductPayload(kind="broadcast", text="всем"),
+        "work2",
+        CommandMode.DRY_RUN,
+    )
+    everyone = runtime._build_argv(
+        CommandKind.CONDUCT,
+        ConductPayload(kind="broadcast", text="всем"),
+        "all",
+        CommandMode.DRY_RUN,
+    )
+    assert pinned is not None
+    assert pinned[pinned.index("--accounts") + 1] == "work2"
+    assert everyone is not None
+    assert "--accounts" not in everyone
 
 
 @pytest.mark.asyncio

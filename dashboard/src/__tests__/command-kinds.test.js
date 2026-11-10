@@ -20,6 +20,25 @@ describe("command payloads", () => {
     expect(payloadFor("DMSEND", { text: "hi", limit: 0 }).limit).toBe(1);
     expect(commandLabel("BROADCAST")).toBe("Рассылка в группы");
   });
+
+  it("targets one group and a named account stop", () => {
+    expect(payloadFor("BROADCAST", { text: "hi", groupId: "-1005" }).group_ids).toEqual([-1005]);
+    expect(payloadFor("STOP", { account: "work2" })).toEqual({ account: "work2" });
+    expect(payloadFor("STOP")).toEqual({ account: "all" });
+  });
+
+  it("builds a conduct DM payload the worker can validate", () => {
+    expect(payloadFor("CONDUCT", { text: " wave ", conductKind: "dm", groupId: "9", limit: 4 })).toEqual({
+      text: "wave",
+      kind: "dm",
+      group_id: 9,
+      limit: 4,
+    });
+    expect(payloadFor("CONDUCT", { text: "groups", conductKind: "broadcast" })).toEqual({
+      text: "groups",
+      kind: "broadcast",
+    });
+  });
 });
 
 describe("formatNumber", () => {

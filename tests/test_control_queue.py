@@ -5,8 +5,18 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
+
 from control.config import ControlSettings
-from control.models import CommandKind, CommandStatus
+from control.models import (
+    BroadcastPayload,
+    CommandKind,
+    CommandMode,
+    CommandPayload,
+    CommandStatus,
+    TelegramIdentity,
+)
+from control.policy import CommandPolicy
 from control.queue import LeaseRenewal, QueueRepository
 
 
@@ -222,3 +232,65 @@ def test_enqueue_is_idempotent_and_terminal_event_is_sequence_two():
     assert repo.append_event(first.id, 1, "info", "completed", "повтор") is False
     assert repo.append_event(first.id, 2, "info", "completed", "готово") is True
     assert [row["sequence"] for row in fake.tables["control_command_events"]] == [1, 2]
+
+
+def test_live_nonce_round_trips_and_missing_nonce_is_rejected():
+    repo, fake = _repo()
+    nonce = uuid4()
+    key = uuid4()
+    queued = repo.enqueue(
+        1,
+        "BROADCAST",
+        "LIVE",
+        "main",
+        {"text": "привет"},
+        key,
+        confirmation_nonce=nonce,
+    )
+    assert queued is not None
+    assert queued.request.confirmation_nonce == nonce
+    stored = fake.tables["control_commands"][0]
+    assert stored["confirmation_nonce"] == str(nonce)
+
+    created = stored["created_at"]
+    fake.claim_rows = [
+        {
+            **stored,
+            "status": "CLAIMED",
+            "version": 1,
+            "claimed_at": created,
+            "lease_expires_at": created,
+        }
+    ]
+    claimed = repo.claim_commands("worker-a")
+    assert claimed[0].request.confirmation_nonce == nonce
+    assert claimed[0].request.mode == CommandMode.LIVE
+    identity = TelegramIdentity(telegram_user_id=1, auth_date=datetime.now(UTC))
+    assert CommandPolicy(_settings()).validate_request(identity, claimed[0].request)["ok"] is True
+
+    rejected = CommandPolicy(_settings()).validate_request(
+        identity,
+        CommandPayload.model_construct(
+            kind=CommandKind.BROADCAST,
+            mode=CommandMode.LIVE,
+            account="main",
+            payload=BroadcastPayload(text="привет"),
+            idempotency_key=uuid4(),
+            confirmation_nonce=None,
+        ),
+    )
+    assert rejected["ok"] is False
+    assert "confirmation_nonce" in rejected["error"]
+
+    fake.claim_rows = [
+        {
+            **stored,
+            "confirmation_nonce": None,
+            "status": "CLAIMED",
+            "version": 1,
+            "claimed_at": created,
+            "lease_expires_at": created,
+        }
+    ]
+    with pytest.raises(ValueError, match="confirmation_nonce"):
+        repo.claim_commands("worker-a")

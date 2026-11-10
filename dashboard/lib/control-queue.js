@@ -136,6 +136,7 @@ export async function enqueueCommand({ ownerId, kind, mode, account, payload, id
         account: account || "main",
         payload: payload || {},
         request_digest: requestDigest,
+        confirmation_nonce: confirmationNonce ?? null,
         status: "PENDING",
         version: 0,
       },
@@ -153,7 +154,7 @@ export async function enqueueCommand({ ownerId, kind, mode, account, payload, id
 export async function listCommands({ ownerId, limit = 50, offset = 0 }) {
   const res = await fetch(
     supabaseUrl(
-      `control_commands?owner_telegram_id=eq.${ownerId}&order=created_at.desc&limit=${limit}&offset=${offset}`
+      `control_commands?owner_telegram_id=eq.${ownerId}&order=created_at.desc&limit=${limit}&offset=${offset}&select=id,kind,mode,account,status,created_at,claimed_at,finished_at,error_code,result_summary`
     ),
     { headers: supabaseHeaders(), cache: "no-store" }
   );

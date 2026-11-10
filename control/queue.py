@@ -64,7 +64,7 @@ class QueueRepository:
         request_digest = self._digest(payload)
         existing = (
             self._client.table("control_commands")
-            .select("id,status,kind,mode,account,payload,created_at,version")
+            .select("id,status,kind,mode,account,payload,created_at,version,confirmation_nonce")
             .eq("owner_telegram_id", owner_telegram_id)
             .eq("idempotency_key", str(idempotency_key))
             .maybe_single()
@@ -82,6 +82,7 @@ class QueueRepository:
             "account": account,
             "payload": payload,
             "request_digest": request_digest,
+            "confirmation_nonce": str(confirmation_nonce) if confirmation_nonce else None,
             "status": CommandStatus.PENDING.value,
             "created_at": self._now().isoformat(),
             "version": 0,

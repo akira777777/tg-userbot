@@ -66,6 +66,30 @@ export default function SnapshotView({ data }) {
         </table>
       </section>
       <section className="panel">
+        <h2>Группы</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Название</th>
+              <th>В рассылке</th>
+              <th>Участники</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data.groups ?? []).map((group) => (
+              <tr key={group.id}>
+                <td>{group.title || group.id}</td>
+                <td>{group.in_broadcast ? "да" : "нет"}</td>
+                <td>{formatNumber(group.members_collected)}</td>
+              </tr>
+            ))}
+            {!(data.groups ?? []).length && (
+              <tr><td className="empty" colSpan="3">Нет групп в зеркале</td></tr>
+            )}
+          </tbody>
+        </table>
+      </section>
+      <section className="panel">
         <h2>Последние кампании</h2>
         <table>
           <thead>

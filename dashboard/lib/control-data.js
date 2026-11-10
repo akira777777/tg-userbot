@@ -16,10 +16,19 @@ async function readRows(build) {
 }
 
 export async function loadControlSnapshot() {
-  const [accounts, campaigns, stats] = await Promise.all([
+  const [accounts, groups, campaigns, stats] = await Promise.all([
     readRows((client) => client.from("tb_accounts").select("name,enabled,daily_budget,groups_covered,writable_groups,dm_today,flood_until").order("name")),
+    readRows((client) => client.from("tb_groups").select("id,title,in_broadcast,members_collected").order("title").limit(100)),
     readRows((client) => client.from("tb_campaigns").select("id,kind,account,created_at,ok,fail").order("id", { ascending: false }).limit(20)),
     readRows((client) => client.from("tb_stats").select("key,value")),
   ]);
-  return { schemaMissing: [accounts, campaigns, stats].some((result) => result.missing), accounts: accounts.rows, groups: [], campaigns: campaigns.rows, stats: stats.rows, fetchedAt: new Date().toISOString() };
+  const parts = [accounts, groups, campaigns, stats];
+  return {
+    schemaMissing: parts.some((result) => result.missing),
+    accounts: accounts.rows,
+    groups: groups.rows,
+    campaigns: campaigns.rows,
+    stats: stats.rows,
+    fetchedAt: new Date().toISOString(),
+  };
 }
