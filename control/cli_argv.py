@@ -112,7 +112,7 @@ def _control_argv(kind: CommandKind, data: dict, account: str, mode: CommandMode
             args += ["--repeat-ok"]
         return _with_mode(args, mode)
     if kind == CommandKind.CONDUCT:
-        if data.get("kind") not in {"broadcast", "dm"}:
+        if data.get("kind") not in {"broadcast", "dm", "both"}:
             return None
         args = ["conduct", "--what", data["kind"]]
         _append_delivery_args(args, data)
@@ -120,7 +120,7 @@ def _control_argv(kind: CommandKind, data: dict, account: str, mode: CommandMode
             args += ["--group", str(data["group_id"])]
         if data.get("limit"):
             args += ["--limit", str(data["limit"])]
-        if data.get("window_hours"):
+        if data.get("window_hours") and data.get("kind") != "both":
             args += ["--window", str(data["window_hours"])]
         if data.get("repeat_ok"):
             args += ["--repeat-ok"]
@@ -305,8 +305,8 @@ def _web_delivery(p: dict, action: str, tail: list[str], slot: str, account: str
 
 def _web_conduct(p: dict) -> tuple[list[str], str, str]:
     kind = str(p.get("kind") or "")
-    if kind not in ("dm", "broadcast"):
-        raise ValueError("conduct: kind только dm|broadcast")
+    if kind not in ("dm", "broadcast", "both"):
+        raise ValueError("conduct: kind только dm|broadcast|both")
     text = str(p.get("text", "")).strip()[:MAX_TEXT]
     mid = str(p.get("media") or "")
     if not text and not mid.isdigit():
@@ -332,7 +332,7 @@ def _web_conduct(p: dict) -> tuple[list[str], str, str]:
             if not ACCOUNT_RE.fullmatch(a):
                 raise ValueError(f"conduct: некорректное имя аккаунта {a!r}")
         args += ["--accounts"] + accs
-    if p.get("window"):
+    if kind != "both" and p.get("window"):
         w = float(p["window"])
         if not (0.1 <= w <= 24):
             raise ValueError("conduct: окно 0.1..24 ч")

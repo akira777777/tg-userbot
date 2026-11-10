@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sqlite3
 import sys
 from pathlib import Path
 from typing import Any
@@ -49,12 +51,37 @@ class UserbotRuntime:
         spec = build_control_cli(kind, payload, account, record.request.mode)
         if spec is None:
             return self._fail(account, f"неподдерживаемая команда: {kind}")
-        if not await self._locker.acquire(spec.slot_key):
-            return self._fail(account, "busy")
+        slots = [spec.slot_key]
+        if kind == CommandKind.CONDUCT:
+            for name in self._conduct_accounts(account):
+                if name not in slots:
+                    slots.append(name)
+        acquired: list[str] = []
         try:
+            for slot in slots:
+                if not await self._locker.acquire(slot):
+                    return self._fail(account, "busy")
+                acquired.append(slot)
             return await self._run_locked(record, spec.argv, account)
         finally:
-            await self._locker.release(spec.slot_key)
+            for slot in reversed(acquired):
+                await self._locker.release(slot)
+
+    def _conduct_accounts(self, account: str) -> list[str]:
+        """Сессии, которые conduct реально откроет. Их слоты нельзя отдать другой команде."""
+        if account and account not in {"all", "conductor"}:
+            return [account]
+        db_path = Path(os.environ.get("USERBOT_DB", self._root / "userbot.db"))
+        if not db_path.exists():
+            return []
+        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)
+        try:
+            return [row[0] for row in conn.execute(
+                "SELECT name FROM accounts WHERE enabled=1 ORDER BY name")]
+        except sqlite3.Error:
+            return []
+        finally:
+            conn.close()
 
     async def terminate_command(self, command_id: UUID) -> bool:
         proc = self._procs.get(command_id)

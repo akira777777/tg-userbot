@@ -293,7 +293,7 @@
         <h2>Дирижёр</h2>
         <textarea id="cd_text" placeholder="Текст для всех целей…" style="min-height:64px"></textarea>
         <div class="row">
-          <label>тип <select id="cd_kind" style="width:130px"><option value="broadcast">broadcast</option><option value="dm">dm</option></select></label>
+          <label>тип <select id="cd_kind" style="width:160px"><option value="broadcast">broadcast</option><option value="dm">dm</option><option value="both">группы и личные</option></select></label>
           <label><input type="checkbox" id="cd_dry" checked> dry-run</label>
           <label>лимит <input class="num" type="number" id="cd_limit" value="20"></label>
           <label>окно <input class="num" type="number" id="cd_window" value="6"> ч</label>
@@ -301,7 +301,7 @@
           <label>медиа <select id="cd_media" style="width:160px"><option value="">— без —</option></select></label>
           <button type="button" class="pri" id="cd_send">Проверить</button>
         </div>
-        <p class="note">Цели делятся между включёнными аккаунтами. Пауза одного аккаунта не отдаёт его цель другому. В группы пишет только тот, кто в них состоит.</p>
+        <p class="note" id="cd_note">Цели делятся между включёнными аккаунтами. Пауза одного аккаунта не отдаёт его цель другому. В группы пишет только тот, кто в них состоит.</p>
       </div>
       <div class="card">
         <h2>Blacklist</h2>
@@ -569,11 +569,23 @@ $('dm_send').onclick = () => run({action:'dmsend', account: $('accSel').value,
   repeat_ok: $('dm_repeat').checked, group: +$('dm_group').value || 0});
 $('bl_add').onclick = () => run({action:'blacklist_add',
   value: $('bl_value').value, reason: $('bl_reason').value || 'web'});
-$('cd_send').onclick = () => run({action:'conduct', kind: $('cd_kind').value,
-  text: $('cd_text').value, dry: $('cd_dry').checked,
-  media: $('cd_media').value || "",
-  limit: +$('cd_limit').value || 0, window: +$('cd_window').value || 6,
-  repeat_ok: $('cd_repeat').checked});
+function paintConduct(){
+  const both = $('cd_kind').value === 'both';
+  $('cd_window').disabled = both;
+  $('cd_note').textContent = both
+    ? 'Группы и личные идут вместе, пока не нажата остановка. Окно времени не действует. Аккаунт спит на FloodWait, PeerFlood, slowmode и своём дневном потолке. Выключенный аккаунт не участвует.'
+    : 'Цели делятся между включёнными аккаунтами. Пауза одного аккаунта не отдаёт его цель другому. В группы пишет только тот, кто в них состоит.';
+}
+$('cd_kind').addEventListener('change', paintConduct);
+paintConduct();
+$('cd_send').onclick = () => {
+  const kind = $('cd_kind').value;
+  const payload = {action:'conduct', kind, text: $('cd_text').value, dry: $('cd_dry').checked,
+    media: $('cd_media').value || "", limit: +$('cd_limit').value || 0,
+    repeat_ok: $('cd_repeat').checked};
+  if (kind !== 'both') payload.window = +$('cd_window').value || 6;
+  run(payload);
+};
 $('imp_btn').onclick = () => {
   if (!$('imp_name').value || !$('imp_path').value)
     return addLog({type:'job', text:'⚠ импорт: имя и путь до *.session'});

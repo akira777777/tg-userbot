@@ -240,6 +240,38 @@ async def test_same_account_slot_rejects_second_command(
 
 
 @pytest.mark.asyncio
+async def test_conduct_holds_the_account_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    runtime = _runtime(tmp_path)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_exec(*_cmd, **_kwargs):
+        return _HoldProc(started, release)
+
+    monkeypatch.setattr("control.executor.asyncio.create_subprocess_exec", fake_exec)
+    first = asyncio.create_task(
+        runtime.run_command(
+            _record(
+                CommandKind.CONDUCT,
+                CommandMode.DRY_RUN,
+                ConductPayload(kind="both", text="проверка"),
+                "main",
+            )
+        )
+    )
+    await started.wait()
+    second = await runtime.run_command(
+        _record(CommandKind.BROADCAST, CommandMode.DRY_RUN, BroadcastPayload(text="b"), "main")
+    )
+    assert second["ok"] is False
+    assert second["error"] == "busy"
+    release.set()
+    assert (await first)["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_stop_terminates_in_flight_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

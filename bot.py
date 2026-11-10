@@ -759,6 +759,101 @@ def handoff_broadcast(row, name, players, edges):
     return None
 
 
+BOTH_SLEEP_CAP = 30
+DIALOG_REFRESH_SECONDS = 15 * 60
+DM_MIN_GAP = 20.0
+GROUP_PAUSE = (3.0, 8.0)
+DM_PAUSE = (20.0, 45.0)
+_LINK_ERRORS = {
+    "ConnectionError", "ConnectionResetError", "TimeoutError",
+    "ServerError", "IncompleteReadError", "ConnectionErrorError",
+}
+
+
+def earliest_moment(now, deadlines):
+    """Ближайший момент в будущем. None, если ждать нечего."""
+    future = []
+    for item in deadlines:
+        if not item:
+            continue
+        if isinstance(item, str):
+            try:
+                item = datetime.fromisoformat(item)
+            except ValueError:
+                continue
+        if item.tzinfo is None:
+            item = item.replace(tzinfo=timezone.utc)
+        if item > now:
+            future.append(item)
+    return min(future) if future else None
+
+
+def next_utc_midnight(now):
+    now = now.astimezone(timezone.utc)
+    nxt = now.date() + timedelta(days=1)
+    return datetime(nxt.year, nxt.month, nxt.day, tzinfo=timezone.utc)
+
+
+def wait_seconds(now, moment, cap=BOTH_SLEEP_CAP):
+    """Сколько спать до момента, но не дольше cap: так Стоп замечается без долгой паузы."""
+    if moment is None:
+        return float(cap)
+    return max(0.0, min(float(cap), (moment - now).total_seconds()))
+
+
+def reassign_groups_on_flood(name, pending, players, edges):
+    """Ещё не отправленные группы уходят тому, кто может писать и у кого есть бюджет.
+
+    Сообщение, на котором пришёл FloodWait, в pending не входит: оно остаётся name.
+    used у принимающего растёт, чтобы пачка не превысила остаток.
+    """
+    stay, moves = [], []
+    for row in pending:
+        other = handoff_broadcast(row, name, players, edges)
+        if other:
+            moves.append((other, row))
+            players[other]["used"] = players[other].get("used", 0) + 1
+        else:
+            stay.append(row)
+    return stay, moves
+
+
+def hold_dm_queue(current, pending):
+    """PeerFlood: люди из очереди этого аккаунта никому не передаются."""
+    held = []
+    if current is not None:
+        held.append(current)
+    held.extend(pending)
+    return held
+
+
+def both_should_continue(dry_run, stopped):
+    """Сухой план печатается один раз. Боевой цикл живёт, пока не попросили стоп."""
+    return not dry_run and not stopped
+
+
+def next_channel(has_group, has_dm, since_any, last_kind, dm_gap=DM_MIN_GAP):
+    """Что слать следующим с одной сессии. None — рано для личного, групп нет."""
+    dm_ready = has_dm and (since_any is None or since_any >= dm_gap)
+    if dm_ready and (not has_group or last_kind == "broadcast"):
+        return "dm"
+    if has_group:
+        return "broadcast"
+    if dm_ready:
+        return "dm"
+    return None
+
+
+def channel_open(player, kind, now=None):
+    if kind == "dm" and cooldown_remaining({"flood_until": player.get("dm_halt_until")}, now):
+        return False
+    cap = player.get("broadcast_budget") if kind == "broadcast" else player.get("dm_budget")
+    used = player.get("broadcast_used") if kind == "broadcast" else player.get("dm_used")
+    if not cap:
+        return True
+    return int(used or 0) < int(cap)
+
+
 def remember_permanent(conn, kind, key, reason, account=None):
     """Постоянный отказ больше не попадает в очередь."""
     if kind == "dm":
@@ -1881,12 +1976,452 @@ def preview_assign(kind, rows, players, edges=None, limit_show=30):
     return shown, unplanned
 
 
+def _both_stopped(names, started_at):
+    if stop_requested("all", started_at) or stop_requested("conductor", started_at):
+        return True
+    return any(stop_requested(name, started_at) for name in names)
+
+
+def _broadcast_shadow(players, queues):
+    shadow = {}
+    for name, player in players.items():
+        shadow[name] = {
+            "budget": player["broadcast_budget"],
+            "used": player["broadcast_used"] + len(queues[name]["broadcast"]),
+            "flood_until": player["flood_until"],
+        }
+    return shadow
+
+
+def _player_view(players, kind, now):
+    view = {}
+    for name, player in players.items():
+        if cooldown_remaining(player, now) or not channel_open(player, kind, now):
+            continue
+        cap = player["broadcast_budget"] if kind == "broadcast" else player["dm_budget"]
+        used = player["broadcast_used"] if kind == "broadcast" else player["dm_used"]
+        view[name] = {"budget": cap, "used": used, "flood_until": None}
+    return view
+
+
+def _idle_deadlines(conn, players, slow_until, now):
+    items = [next_utc_midnight(now), now + timedelta(seconds=DIALOG_REFRESH_SECONDS)]
+    for player in players.values():
+        items.append(player.get("flood_until"))
+        items.append(player.get("dm_halt_until"))
+    items.extend(slow_until.values())
+    cutoff = (now - timedelta(hours=24)).isoformat(timespec="seconds")
+    row = conn.execute(
+        "SELECT MIN(s.ts) ts FROM sent s JOIN campaigns c ON c.id=s.campaign "
+        "WHERE c.kind='broadcast' AND s.status='ok' AND s.ts>=?",
+        (cutoff,)).fetchone()
+    if row and row["ts"]:
+        ts = datetime.fromisoformat(row["ts"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        items.append(ts + timedelta(hours=24))
+    return items
+
+
+async def _sleep_chunked(seconds, names, started_at):
+    left = float(seconds)
+    while left > 0:
+        if _both_stopped(names, started_at):
+            return False
+        step = min(left, BOTH_SLEEP_CAP)
+        await asyncio.sleep(step)
+        left -= step
+    return not _both_stopped(names, started_at)
+
+
+async def cmd_conduct_both(args):
+    """Группы и личные вместе, без окна времени.
+
+    Один процесс держит сессии включённых аккаунтов. Круг набирает ещё допустимые
+    цели и засыпает, когда Телеграм или дневной потолок не дают слать сейчас.
+    Сухой прогон печатает один план и выходит.
+    """
+    import time as _t
+    conn = connect()
+    media = resolve_media(conn, getattr(args, "media", None))
+    text = read_message(args)
+    names = args.accounts or [r["name"] for r in conn.execute(
+        "SELECT name FROM accounts WHERE enabled=1 ORDER BY name")]
+    from telethon.tl.types import Chat, Channel
+
+    players = {}
+    for name in names:
+        try:
+            client = get_client(name, allow_flood=True)
+            await client.connect()
+            if not await client.is_user_authorized():
+                print(f"  пропуск «{name}»: сессия не авторизована — login --account {name}")
+                await client.disconnect()
+                continue
+            me = await client.get_me()
+            conn.execute("UPDATE accounts SET user_id=? WHERE name=?", (me.id, name))
+            arow = conn.execute(
+                "SELECT daily_budget, broadcast_budget, flood_until FROM accounts WHERE name=?",
+                (name,)).fetchone()
+            bcap = (arow["broadcast_budget"] if arow and arow["broadcast_budget"] is not None else 15)
+            draw = arow["daily_budget"] if arow else None
+            dcap = 30 if draw is None else draw
+            bused = today_broadcast_sent(conn, name)
+            dused = today_dm_sent(conn, name)
+            players[name] = {
+                "client": client, "me": me.id,
+                "broadcast_budget": bcap, "broadcast_used": bused,
+                "dm_budget": dcap, "dm_used": dused,
+                "flood_until": arow["flood_until"] if arow else None,
+                "dm_halt_until": None, "held_dm": set(),
+                "budget": bcap, "used": bused,
+            }
+            print(f"  игрок «{name}» (id={me.id}): группы {bused}/{bcap or '∞'}, "
+                  f"личные {dused}/{dcap or '∞'}")
+        except SystemExit as exc:
+            print(f"  пропуск «{name}»: {exc}")
+        except Exception as exc:
+            print(f"  пропуск «{name}»: {type(exc).__name__}: {str(exc)[:80]}")
+    conn.commit()
+    if not players:
+        sys.exit("Ни один аккаунт не подключён — login --account NAME")
+
+    started_at = now_iso()
+    names = list(players)
+    edges, emaps = {}, {}
+    slow_until = {}
+    dialogs_at = None
+
+    def refresh_caps():
+        for name, player in players.items():
+            row = conn.execute(
+                "SELECT flood_until FROM accounts WHERE name=?", (name,)).fetchone()
+            if row:
+                player["flood_until"] = row["flood_until"]
+            player["broadcast_used"] = today_broadcast_sent(conn, name)
+            player["dm_used"] = today_dm_sent(conn, name)
+            player["budget"] = player["broadcast_budget"]
+            player["used"] = player["broadcast_used"]
+            if player.get("dm_halt_until") and not cooldown_remaining(
+                    {"flood_until": player["dm_halt_until"]}):
+                player["dm_halt_until"] = None
+                player["held_dm"].clear()
+
+    async def refresh_edges(force):
+        nonlocal dialogs_at
+        if not force and dialogs_at is not None and (_t.monotonic() - dialogs_at) < DIALOG_REFRESH_SECONDS:
+            return
+        for name, player in players.items():
+            try:
+                if not player["client"].is_connected():
+                    await player["client"].connect()
+                dialogs = await player["client"].get_dialogs()
+            except Exception as exc:
+                print(f"  диалоги «{name}» не обновлены: {type(exc).__name__}: {str(exc)[:80]}")
+                continue
+            emaps[name] = {
+                d.entity.id: d.entity for d in dialogs if isinstance(d.entity, (Chat, Channel))
+            }
+            writable = set()
+            for gid, ent in emaps[name].items():
+                can, why = classify_broadcast(ent)
+                if can:
+                    writable.add(gid)
+                    if args.dry_run:
+                        record_edge(conn, name, gid)
+                    else:
+                        apply_write_edge(conn, name, gid, True, "")
+                else:
+                    apply_write_edge(conn, name, gid, False, why)
+            edges[name] = writable
+            print(f"  покрытие «{name}»: диалогов {len(emaps[name])}, можно писать {len(writable)}")
+        dialogs_at = _t.monotonic()
+        conn.commit()
+
+    def load_targets(now):
+        recent = set() if args.repeat_ok else recent_ok_targets(conn, "broadcast", 24)
+        query = "SELECT * FROM groups WHERE active=1 AND in_broadcast=1"
+        params = []
+        if args.ids:
+            query += " AND id IN (%s)" % ",".join("?" * len(args.ids))
+            params = list(args.ids)
+        groups = []
+        for row in conn.execute(query, params):
+            if str(row["id"]) in recent:
+                continue
+            ready = slow_until.get(row["id"])
+            if ready and ready > now:
+                continue
+            if any(row["id"] in edge for edge in edges.values()):
+                groups.append(row)
+        people = dm_targets(conn, group_id=args.group, repeat_ok=args.repeat_ok)
+        me_ids = {player["me"] for player in players.values()}
+        held = set()
+        for player in players.values():
+            if cooldown_remaining({"flood_until": player.get("dm_halt_until")}, now):
+                held |= set(player["held_dm"])
+        people = [row for row in people if row["user_id"] not in me_ids and row["user_id"] not in held]
+        if args.limit:
+            groups = groups[:args.limit]
+            people = people[:args.limit]
+        return groups, people
+
+    async def one_round():
+        if _both_stopped(names, started_at):
+            return 0
+        now = datetime.now(timezone.utc)
+        refresh_caps()
+        await refresh_edges(force=dialogs_at is None or args.dry_run)
+        groups, people = load_targets(now)
+        gplan, g_unplanned = assign_targets(
+            "broadcast", groups, _player_view(players, "broadcast", now), edges)
+        dplan, d_unplanned = assign_targets(
+            "dm", people, _player_view(players, "dm", now), None)
+        print("раскладка групп: " + ", ".join(
+            f"«{name}» {sum(1 for who, _row in gplan if who == name)}" for name in players)
+            + f", без слота {g_unplanned}")
+        print("раскладка личных: " + ", ".join(
+            f"«{name}» {sum(1 for who, _row in dplan if who == name)}" for name in players)
+            + f", без слота {d_unplanned}")
+        if args.dry_run:
+            for who, row in gplan:
+                print(f"  [dry] {who or 'НИКОМУ'}: группа {row['id']} «{(row['title'] or '')[:44]}»")
+            for who, row in dplan:
+                print(f"  [dry] {who or 'НЕТ БЮДЖЕТА'}: @{row['username'] or '-'} id={row['user_id']}")
+            print(f"Сухой план: групп {len(groups)}, людей {len(people)}; "
+                  f"аккаунтов {len(players)} — ничего не отправлено")
+            return 0
+
+        queues = {name: {"broadcast": collections.deque(), "dm": collections.deque()} for name in players}
+        for who, row in gplan:
+            if who:
+                queues[who]["broadcast"].append(row)
+        for who, row in dplan:
+            if who:
+                queues[who]["dm"].append(row)
+        if not any(queue["broadcast"] or queue["dm"] for queue in queues.values()):
+            print("  сейчас нечего отправлять")
+            return 0
+        camps = {}
+        if any(queue["broadcast"] for queue in queues.values()):
+            cur = conn.execute(
+                "INSERT INTO campaigns(kind,text,created_at,account) VALUES(?,?,?,?)",
+                ("broadcast", text, now_iso(), "conductor"))
+            camps["broadcast"] = cur.lastrowid
+        if any(queue["dm"] for queue in queues.values()):
+            cur = conn.execute(
+                "INSERT INTO campaigns(kind,text,created_at,account) VALUES(?,?,?,?)",
+                ("dm", text, now_iso(), "conductor"))
+            camps["dm"] = cur.lastrowid
+        conn.commit()
+        stats = {"ok": 0}
+
+        async def worker(name):
+            player = players[name]
+            deferred = None
+            blocked = set()
+            while not _both_stopped(names, started_at):
+                rem = cooldown_remaining(player)
+                if rem:
+                    await asyncio.sleep(min(rem, BOTH_SLEEP_CAP))
+                    continue
+                if deferred is not None:
+                    kind, row = deferred
+                    deferred = None
+                    if not channel_open(player, kind):
+                        queues[name][kind].appendleft(row)
+                        blocked.add(kind)
+                        if blocked >= {"broadcast", "dm"} or not any(queues[name].values()):
+                            return
+                        continue
+                else:
+                    has_group = (
+                        "broadcast" not in blocked
+                        and bool(queues[name]["broadcast"])
+                        and channel_open(player, "broadcast")
+                    )
+                    has_dm = (
+                        "dm" not in blocked
+                        and bool(queues[name]["dm"])
+                        and channel_open(player, "dm")
+                    )
+                    last_any = player.get("last_mono")
+                    since = None if last_any is None else _t.monotonic() - last_any
+                    kind = next_channel(has_group, has_dm, since, player.get("last_kind"))
+                    if kind is None:
+                        if not queues[name]["broadcast"] and not queues[name]["dm"]:
+                            return
+                        if queues[name]["dm"] and since is not None and since < DM_MIN_GAP:
+                            await asyncio.sleep(min(DM_MIN_GAP - since, BOTH_SLEEP_CAP))
+                            continue
+                        return
+                    row = queues[name][kind].popleft()
+                if kind == "broadcast":
+                    gid = row["id"]
+                    ent = emaps.get(name, {}).get(gid)
+                    can, why = classify_broadcast(ent)
+                    if not can:
+                        apply_write_edge(conn, name, gid, False, why)
+                        conn.commit()
+                        held = edges.get(name)
+                        if held is not None:
+                            held.discard(gid)
+                        print(f"  пропуск [{name}] группа {gid}: {REASON_RU.get(why, why)}")
+                        other = handoff_broadcast(row, name, _broadcast_shadow(players, queues), edges)
+                        if other:
+                            queues[other]["broadcast"].append(row)
+                            print(f"  передаю группу {gid} «{(row['title'] or '')[:40]}» {name} → {other}")
+                        continue
+                    if ent is not None and slowmode_exceeds(ent, DIALOG_REFRESH_SECONDS):
+                        seconds = int(getattr(ent, "slowmode_seconds", 0) or 0)
+                        slow_until[gid] = datetime.now(timezone.utc) + timedelta(seconds=max(seconds, 1))
+                        print(f"  пропуск [{name}] группа {gid}: {REASON_RU['slowmode']}")
+                        continue
+                    peer = pick_target(emaps.get(name, {}), row)
+                    key = str(gid)
+                    label = f"группа {gid} «{(row['title'] or '')[:44]}»"
+                else:
+                    peer = row["user_id"]
+                    key = str(row["user_id"])
+                    label = f"@{row['username'] or '-'} id={row['user_id']}"
+                sent_ok = False
+                for attempt in (1, 2):
+                    try:
+                        if not player["client"].is_connected():
+                            await player["client"].connect()
+                        if media:
+                            await player["client"].send_file(
+                                peer, media, caption=text or None, supports_streaming=True)
+                        else:
+                            await player["client"].send_message(peer, text)
+                        sent_ok = True
+                        break
+                    except Exception as exc:
+                        if type(exc).__name__ in _LINK_ERRORS and attempt == 1:
+                            print(f"  связь [{name}] оборвалась, поднимаю ту же сессию")
+                            try:
+                                await player["client"].connect()
+                            except Exception as again:
+                                exc = again
+                            else:
+                                continue
+                        disp = target_disposition(exc, kind)
+                        if disp == "defer_same_account":
+                            fu = flood_pause_until(exc)
+                            player["flood_until"] = fu
+                            deferred = (kind, row)
+                            conn.execute(
+                                "UPDATE accounts SET flood_until=? WHERE name=?", (fu, name))
+                            conn.commit()
+                            pending = list(queues[name]["broadcast"])
+                            queues[name]["broadcast"].clear()
+                            stay, moves = reassign_groups_on_flood(
+                                name, pending, _broadcast_shadow(players, queues), edges)
+                            queues[name]["broadcast"].extend(stay)
+                            for other, moved in moves:
+                                queues[other]["broadcast"].append(moved)
+                                print(f"  передаю группу {moved['id']} "
+                                      f"«{(moved['title'] or '')[:40]}» {name} → {other}")
+                            seconds = int(getattr(exc, "seconds", 0) or 0)
+                            print(f"  ⏸ «{name}»: {type(exc).__name__} {seconds} c "
+                                  f"(пауза до {fu[11:16]} UTC) — эта цель остаётся ему")
+                        elif disp in ("halt_dm_queue", "halt_account") and kind == "dm":
+                            held_rows = hold_dm_queue(row, list(queues[name]["dm"]))
+                            queues[name]["dm"].clear()
+                            player["held_dm"].update(item["user_id"] for item in held_rows)
+                            player["dm_halt_until"] = spam_pause_until()
+                            print(f"  ⏸ «{name}»: {type(exc).__name__} — личные на 24 ч, "
+                                  f"эти люди другим аккаунтам не отдаются")
+                        elif disp == "halt_account":
+                            fu = spam_pause_until()
+                            player["flood_until"] = fu
+                            held_rows = hold_dm_queue(None, list(queues[name]["dm"]))
+                            queues[name]["dm"].clear()
+                            player["held_dm"].update(item["user_id"] for item in held_rows)
+                            player["dm_halt_until"] = fu
+                            conn.execute(
+                                "UPDATE accounts SET flood_until=? WHERE name=?", (fu, name))
+                            conn.commit()
+                            print(f"  ⏸ «{name}»: {type(exc).__name__} — аккаунт молчит до {fu[11:16]} UTC")
+                            return
+                        elif disp == "skip":
+                            seconds = int(getattr(exc, "seconds", 0) or 0)
+                            if kind == "broadcast":
+                                slow_until[row["id"]] = datetime.now(timezone.utc) + timedelta(
+                                    seconds=max(seconds, 1))
+                            print(f"  skip [{name}] {label}: {REASON_RU['slowmode']}")
+                        else:
+                            status = f"fail:{type(exc).__name__}"
+                            if disp == "remember":
+                                remember_permanent(conn, kind, key, permanent_reason(exc, kind), name)
+                            conn.execute(
+                                "INSERT OR REPLACE INTO sent(campaign,target,status,ts,account) "
+                                "VALUES(?,?,?,?,?)",
+                                (camps[kind], key, status, now_iso(), name))
+                            conn.commit()
+                            print(f"  fail [{name}] {label}: {type(exc).__name__}: {str(exc)[:80]}")
+                        break
+                if not sent_ok:
+                    continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO sent(campaign,target,status,ts,account) "
+                    "VALUES(?,?,?,?,?)",
+                    (camps[kind], key, "ok", now_iso(), name))
+                conn.commit()
+                stats["ok"] += 1
+                if kind == "broadcast":
+                    player["broadcast_used"] += 1
+                    player["used"] = player["broadcast_used"]
+                else:
+                    player["dm_used"] += 1
+                print(f"  ok  [{name}] {label}")
+                player["last_mono"] = _t.monotonic()
+                player["last_kind"] = kind
+                lo, hi = GROUP_PAUSE if kind == "broadcast" else DM_PAUSE
+                await asyncio.sleep(random.uniform(lo, hi))
+
+        queued = sum(len(q["broadcast"]) + len(q["dm"]) for q in queues.values())
+        print(f"Круг both: целей {queued}, аккаунтов {len(players)}")
+        await asyncio.gather(*(worker(name) for name in players))
+        print(f"  круг завершён: ok {stats['ok']}")
+        return stats["ok"]
+
+    try:
+        while True:
+            if _both_stopped(names, started_at):
+                print("остановка")
+                break
+            sent = await one_round()
+            if not both_should_continue(args.dry_run, _both_stopped(names, started_at)):
+                break
+            if sent:
+                continue
+            now = datetime.now(timezone.utc)
+            moment = earliest_moment(now, _idle_deadlines(conn, players, slow_until, now))
+            seconds = wait_seconds(now, moment)
+            stamp = moment.isoformat(timespec="seconds") if moment else "следующая проверка"
+            print(f"  сплю {int(seconds)} с, ближайшее событие {stamp}")
+            if not await _sleep_chunked(seconds, names, started_at):
+                print("остановка")
+                break
+    finally:
+        for player in players.values():
+            try:
+                await player["client"].disconnect()
+            except Exception:
+                pass
+        conn.close()
+
+
 async def cmd_conduct(args):
     """Дирижёр: одна кампания на все включённые аккаунты. Общий организм:
     единая база целей/журнала/чёрного списка. FloodWait и FloodPremiumWait
     оставляют текущую цель этому аккаунту. PeerFlood на DM останавливает очередь
     и не отдаёт её другим.
     Дневные бюджеты считаются на аккаунт; группу отправляет тот, кто может писать."""
+    if args.what == "both":
+        await cmd_conduct_both(args)
+        return
     import time as _t
     conn = connect()
     media = resolve_media(conn, getattr(args, "media", None))
@@ -2260,7 +2795,7 @@ def build_parser():
     p = sub.add_parser("conduct",
                        help="дирижёр: одна кампания на все аккаунты — "
                             "пауза остаётся на том же аккаунте, бюджеты, покрытие групп")
-    p.add_argument("--what", choices=["dm", "broadcast"], required=True)
+    p.add_argument("--what", choices=["dm", "broadcast", "both"], required=True)
     p.add_argument("--text"); p.add_argument("--file")
     p.add_argument("--media", type=int, help="id медиа из библиотеки — уйдёт подписью")
     p.add_argument("--accounts", nargs="*", help="подмножество аккаунтов (по умолчанию все включённые)")

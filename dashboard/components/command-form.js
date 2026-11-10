@@ -34,7 +34,7 @@ export default function CommandForm({ accounts = [], groups = [], onQueued }) {
   const selectedAccount = accountOptions.some((item) => item.value === account)
     ? account
     : accountOptions[0].value;
-  const showLimit = kind === "DMSEND" || (kind === "CONDUCT" && conductKind === "dm");
+  const showLimit = kind === "DMSEND" || (kind === "CONDUCT" && (conductKind === "dm" || conductKind === "both"));
   const showGroup = delivery && groups.length > 0;
 
   async function submit(event) {
@@ -114,6 +114,7 @@ export default function CommandForm({ accounts = [], groups = [], onQueued }) {
             <select value={conductKind} onChange={(event) => setConductKind(event.target.value)}>
               <option value="broadcast">Рассылка в группы</option>
               <option value="dm">Личные сообщения</option>
+              <option value="both">Группы и личные</option>
             </select>
           </label>
         )}

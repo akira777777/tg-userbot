@@ -55,6 +55,7 @@ def test_executor_argv_matches_bot_parser():
         (CommandKind.DMSEND, CommandMode.DRY_RUN, DmSendPayload(text="hi", limit=5, group_id=3), "main"),
         (CommandKind.CONDUCT, CommandMode.DRY_RUN, ConductPayload(kind="dm", text="wave", group_id=9), "main"),
         (CommandKind.CONDUCT, CommandMode.DRY_RUN, ConductPayload(kind="broadcast", text="wave"), "all"),
+        (CommandKind.CONDUCT, CommandMode.DRY_RUN, ConductPayload(kind="both", text="wave", window_hours=6), "all"),
     ]
     for kind, mode, payload, account in cases:
         argv = runtime._build_argv(kind, payload, account, mode)
@@ -70,6 +71,7 @@ def test_web_panel_argv_matches_bot_parser():
         {"action": "broadcast", "account": "main", "text": "hi", "dry": True, "ids": [4]},
         {"action": "dmsend", "account": "main", "text": "hi", "dry": True, "limit": 3, "group": 8},
         {"action": "conduct", "kind": "dm", "text": "hi", "dry": True, "accounts": ["main"]},
+        {"action": "conduct", "kind": "both", "text": "hi", "dry": True, "window": 6},
         {"action": "blacklist_add", "value": "@name"},
         {"action": "cloud", "op": "status"},
         {"action": "media", "op": "list"},

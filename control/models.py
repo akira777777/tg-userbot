@@ -105,7 +105,7 @@ class DmSendPayload(BaseModel):
 class ConductPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["broadcast", "dm"]
+    kind: Literal["broadcast", "dm", "both"]
     text: str | None = None
     media_id: int | None = None
     group_ids: list[int] = Field(default_factory=list, max_length=200)

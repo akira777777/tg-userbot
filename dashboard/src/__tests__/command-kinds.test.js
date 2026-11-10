@@ -38,6 +38,11 @@ describe("command payloads", () => {
       text: "groups",
       kind: "broadcast",
     });
+    expect(payloadFor("CONDUCT", { text: " both ", conductKind: "both", limit: 4 })).toEqual({
+      text: "both",
+      kind: "both",
+      limit: 4,
+    });
   });
 });
 

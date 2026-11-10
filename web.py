@@ -143,6 +143,27 @@ def build_args(p: dict):
     return build_web_args(p)
 
 
+def enabled_account_names():
+    if not DB.exists():
+        return []
+    con = sqlite3.connect(f"file:{DB.as_posix()}?mode=ro", uri=True, timeout=5)
+    try:
+        return [row[0] for row in con.execute(
+            "SELECT name FROM accounts WHERE enabled=1 ORDER BY name")]
+    except sqlite3.Error:
+        return []
+    finally:
+        con.close()
+
+
+def conduct_hold_slots(p: dict) -> list[str]:
+    """Пока дирижёр жив, сессии включённых аккаунтов тоже заняты."""
+    if p.get("action") != "conduct":
+        return []
+    names = p.get("accounts") or enabled_account_names()
+    return [str(name) for name in names if ACCOUNT_RE.fullmatch(str(name))]
+
+
 def account_status(name):
     """(enabled, flood_active) аккаунта по реестру; неизвестный считаем включённым."""
     if not DB.exists():
@@ -200,17 +221,24 @@ async def _kill_tree(pid):
     return True
 
 
-async def run_job(args, label, account, slot):
+async def run_job(args, label, account, slot, extra_slots=None):
     cmd = [PY, str(ROOT / "bot.py")] + args
     BUS.publish({"type": "job", "account": account,
                  "text": f"▶ запуск: bot.py {label}", "job": label})
-    held = await SLOT_LOCKS.acquire(slot)
-    if not held:
-        BUS.publish({"type": "done", "account": account, "job": label,
-                     "text": f"■ слот занят ({label} @ {account})"})
-        if BUS.jobs.get(slot) and BUS.jobs[slot]["name"] == label:
-            BUS.jobs.pop(slot, None)
-        return
+    slots = [slot] + [name for name in (extra_slots or []) if name != slot]
+    held = []
+    for name in slots:
+        if not await SLOT_LOCKS.acquire(name):
+            for got in reversed(held):
+                await SLOT_LOCKS.release(got)
+            BUS.publish({"type": "done", "account": account, "job": label,
+                         "text": f"■ слот занят ({label} @ {name})"})
+            for name in slots:
+                job = BUS.jobs.get(name)
+                if job and job.get("name") == label:
+                    BUS.jobs.pop(name, None)
+            return
+        held.append(name)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, cwd=str(ROOT),
@@ -237,9 +265,11 @@ async def run_job(args, label, account, slot):
         BUS.publish({"type": "done", "account": account, "job": label,
                      "text": f"■ сбой запуска ({type(e).__name__}: {e})"})
     finally:
-        await SLOT_LOCKS.release(slot)
-        if BUS.jobs.get(slot) and BUS.jobs[slot]["name"] == label:
-            BUS.jobs.pop(slot, None)
+        for name in held:
+            await SLOT_LOCKS.release(name)
+            job = BUS.jobs.get(name)
+            if job and job.get("name") == label:
+                BUS.jobs.pop(name, None)
 
 
 async def try_start(p: dict):
@@ -249,18 +279,23 @@ async def try_start(p: dict):
     except (ValueError, TypeError) as e:
         return 400, {"error": str(e)}
     label = str(p.get("action"))
+    extras = conduct_hold_slots(p)
+    slots = [slot] + [name for name in extras if name != slot]
     async with RUN_LOCK:
-        if slot in BUS.jobs:
-            return 409, {"error": f"занято: идёт «{BUS.jobs[slot]['name']}» ({slot})"}
+        for name in slots:
+            if name in BUS.jobs:
+                return 409, {"error": f"занято: идёт «{BUS.jobs[name]['name']}» ({name})"}
         if slot not in ("db", "conductor"):
             enabled, flooded = account_status(account)
             if not enabled:
                 return 409, {"error": f"аккаунт «{account}» отключён"}
             if flooded:
                 return 423, {"error": f"аккаунт «{account}» в cooldown (FloodWait)"}
-        BUS.jobs[slot] = {"name": label, "args": args, "account": account,
-                          "pid": None, "started": now_iso(), "proc": None, "kill": False}
-    asyncio.create_task(run_job(args, label, account, slot))
+        job = {"name": label, "args": args, "account": account,
+               "pid": None, "started": now_iso(), "proc": None, "kill": False}
+        for name in slots:
+            BUS.jobs[name] = job
+    asyncio.create_task(run_job(args, label, account, slot, extras))
     return 200, {"ok": True, "args": args, "slot": slot}
 
 
