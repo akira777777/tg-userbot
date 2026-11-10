@@ -1,35 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { COMMANDS, DELIVERY_KINDS, READ_KINDS, payloadFor } from "../lib/command-kinds";
 
-const READ_KINDS = new Set(["STATUS", "GROUPS", "CAMPAIGNS", "MEDIA_LIST"]);
-const DELIVERY_KINDS = new Set(["BROADCAST", "DMSEND", "CONDUCT"]);
-
-function payloadFor(kind, text) {
-  if (READ_KINDS.has(kind)) return {};
-  if (kind === "BLACKLIST_ADD") return { value: text, reason: "mini-app" };
-  if (kind === "STOP") return { account: "all" };
-  const payload = { text, delay_min: 20, delay_max: 45 };
-  if (kind === "DMSEND") payload.limit = 20;
-  if (kind === "CONDUCT") payload.kind = "broadcast";
-  return payload;
-}
-
-export default function CommandForm() {
+export default function CommandForm({ onQueued }) {
   const [kind, setKind] = useState("STATUS");
   const [text, setText] = useState("");
   const [live, setLive] = useState(false);
+  const [delayMin, setDelayMin] = useState(20);
+  const [delayMax, setDelayMax] = useState(45);
+  const [limit, setLimit] = useState(20);
   const [message, setMessage] = useState("");
+  const [ok, setOk] = useState(false);
   const [pending, setPending] = useState(false);
+
   const delivery = DELIVERY_KINDS.has(kind);
+  const selected = useMemo(() => COMMANDS.find((item) => item.kind === kind), [kind]);
+  const needsText = !READ_KINDS.has(kind) && kind !== "STOP";
 
   async function submit(event) {
     event.preventDefault();
     setPending(true);
     setMessage("");
     try {
+      if (needsText && !text.trim()) throw new Error("Заполни текст или идентификатор.");
       const mode = READ_KINDS.has(kind) ? "READ" : live ? "LIVE" : "DRY_RUN";
-      const payload = payloadFor(kind, text);
+      const payload = payloadFor(kind, { text, delayMin, delayMax, limit });
       let confirmationNonce;
       if (mode === "LIVE") {
         const confirmation = await fetch("/api/control/confirmations", {
@@ -55,8 +51,12 @@ export default function CommandForm() {
       });
       const body = await response.json();
       if (!response.ok || !body.ok) throw new Error(body.error || "Команда не принята");
-      setMessage(body.idempotent ? "Такая команда уже есть в очереди" : `Команда ${body.command_id} поставлена в очередь`);
+      setOk(true);
+      setMessage(body.idempotent ? "Такая команда уже есть в очереди" : `Команда поставлена в очередь`);
+      setLive(false);
+      onQueued?.();
     } catch (error) {
+      setOk(false);
       setMessage(error instanceof Error ? error.message : "Команда не принята");
     } finally {
       setPending(false);
@@ -66,28 +66,42 @@ export default function CommandForm() {
   return (
     <form className="panel" onSubmit={submit}>
       <h2>Управление</h2>
-      <label>
-        Команда
-        <select value={kind} onChange={(event) => setKind(event.target.value)}>
-          {["STATUS", "GROUPS", "CAMPAIGNS", "MEDIA_LIST", "BROADCAST", "DMSEND", "CONDUCT", "BLACKLIST_ADD", "STOP"].map((item) => (
-            <option key={item} value={item}>{item}</option>
-          ))}
-        </select>
-      </label>
-      {!READ_KINDS.has(kind) && kind !== "STOP" && (
-        <label>
-          {kind === "BLACKLIST_ADD" ? "ID или ник" : "Текст"}
-          <textarea value={text} onChange={(event) => setText(event.target.value)} rows={3} />
+      <div className="form-grid">
+        <label className="field">
+          Команда
+          <select value={kind} onChange={(event) => { setKind(event.target.value); setLive(false); setMessage(""); }}>
+            {COMMANDS.map((item) => (
+              <option key={item.kind} value={item.kind}>{item.label}</option>
+            ))}
+          </select>
         </label>
-      )}
-      {delivery && (
-        <label>
-          <input type="checkbox" checked={live} onChange={(event) => setLive(event.target.checked)} />
-          LIVE: реальная отправка после подтверждения
-        </label>
-      )}
-      <button type="submit" disabled={pending}>{pending ? "Отправка…" : live && delivery ? "Подтвердить и запустить" : "Поставить в очередь"}</button>
-      {message && <p role="status">{message}</p>}
+        {selected && <p className="hint">{selected.hint}</p>}
+        {needsText && (
+          <label className="field">
+            {kind === "BLACKLIST_ADD" ? "ID или ник" : "Текст"}
+            <textarea value={text} onChange={(event) => setText(event.target.value)} rows={3} placeholder={kind === "BLACKLIST_ADD" ? "@user или 123456" : "Сообщение для отправки"} />
+          </label>
+        )}
+        {delivery && (
+          <div className="row-2">
+            <label className="field">Пауза от, сек<input type="number" min="1" value={delayMin} onChange={(event) => setDelayMin(event.target.value)} /></label>
+            <label className="field">Пауза до, сек<input type="number" min="1" value={delayMax} onChange={(event) => setDelayMax(event.target.value)} /></label>
+          </div>
+        )}
+        {kind === "DMSEND" && (
+          <label className="field">Лимит получателей<input type="number" min="1" max="50" value={limit} onChange={(event) => setLimit(event.target.value)} /></label>
+        )}
+        {delivery && (
+          <label className="check">
+            <input type="checkbox" checked={live} onChange={(event) => setLive(event.target.checked)} />
+            <span>LIVE: реальная отправка после подтверждения. Без галочки команда уйдёт как dry-run.</span>
+          </label>
+        )}
+      </div>
+      <button className={live && delivery ? "primary danger" : "primary"} type="submit" disabled={pending}>
+        {pending ? "Отправка…" : live && delivery ? "Подтвердить и запустить" : "Поставить в очередь"}
+      </button>
+      {message && <p className={ok ? "notice ok" : "notice error"} role="status">{message}</p>}
     </form>
   );
 }
