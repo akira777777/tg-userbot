@@ -139,20 +139,23 @@ def gather(con):
                     "synced_at": synced})
     out["tb_groups"] = (grp, "id")
 
-    camp_stats = _rows_by(
-        con,
-        "SELECT campaign, "
-        "SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) ok, "
-        "SUM(CASE WHEN status!='ok' THEN 1 ELSE 0 END) fail "
-        "FROM sent GROUP BY campaign",
-        "campaign",
-    )
+    # Считаем ok/fail только у 500 новейших кампаний. NULL status не попадает
+    # ни в ok, ни в fail — как CASE WHEN status='ok' / status!='ok'.
     camps = []
-    for c in con.execute("SELECT * FROM campaigns ORDER BY id DESC LIMIT 500"):
-        stats = camp_stats.get(c["id"])
+    for c in con.execute(
+        "SELECT c.id, c.kind, c.account, c.text, c.created_at, "
+        "COALESCE(SUM(CASE WHEN s.status='ok' THEN 1 ELSE 0 END), 0) ok, "
+        "COALESCE(SUM(CASE WHEN s.status IS NOT NULL AND s.status!='ok' "
+        "THEN 1 ELSE 0 END), 0) fail "
+        "FROM (SELECT id, kind, account, text, created_at FROM campaigns "
+        "ORDER BY id DESC LIMIT 500) c "
+        "LEFT JOIN sent s ON s.campaign=c.id "
+        "GROUP BY c.id, c.kind, c.account, c.text, c.created_at "
+        "ORDER BY c.id DESC"
+    ):
         camps.append({"id": c["id"], "kind": c["kind"], "account": c["account"],
                       "text": (c["text"] or "")[:500], "created_at": c["created_at"],
-                      "ok": stats["ok"] if stats else 0, "fail": stats["fail"] if stats else 0,
+                      "ok": c["ok"], "fail": c["fail"],
                       "synced_at": synced})
     out["tb_campaigns"] = (camps, "id")
 

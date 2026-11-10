@@ -119,3 +119,39 @@ def test_gather_matches_grouped_counts_and_skips_members(tmp_path, monkeypatch):
         assert len(out["tb_sent"][0]) == 4
     finally:
         con.close()
+
+
+def test_gather_limits_campaign_stats_to_newest_500(tmp_path, monkeypatch):
+    db_path = tmp_path / "window.db"
+    monkeypatch.setattr(cloud, "DB", db_path)
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    con.executescript(SCHEMA)
+    today = datetime.now(timezone.utc).replace(microsecond=0).isoformat(timespec="seconds")
+    con.execute("INSERT INTO accounts VALUES('main', 10, '1', 1, 30, NULL, '')")
+    con.executemany(
+        "INSERT INTO campaigns VALUES(?,?,?,?,?)",
+        [(i, "dm", "main", f"campaign-{i}", today) for i in range(1, 502)],
+    )
+    con.executemany(
+        "INSERT INTO sent VALUES(?,?,?,?,?)",
+        [(1, str(n), "main", "ok", today) for n in range(5)] + [
+            (501, "a", "main", "ok", today),
+            (501, "b", "main", "ok", today),
+            (501, "c", "main", "fail:x", today),
+            (501, "d", "main", None, today),
+        ],
+    )
+    con.commit()
+    try:
+        campaigns = cloud.gather(con)["tb_campaigns"][0]
+        ids = [row["id"] for row in campaigns]
+        assert len(ids) == 500
+        assert ids[0] == 501
+        assert ids[-1] == 2
+        assert 1 not in ids
+        assert (campaigns[0]["ok"], campaigns[0]["fail"]) == (2, 1)
+        oldest_in_window = next(row for row in campaigns if row["id"] == 2)
+        assert (oldest_in_window["ok"], oldest_in_window["fail"]) == (0, 0)
+    finally:
+        con.close()

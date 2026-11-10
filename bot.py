@@ -148,6 +148,19 @@ def migrate(conn):
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_sent_account_status_ts ON sent(account, status, ts)"
     )
+    # Покрывающий индекс для дедупа DM и агрегата кампаний. Колонки есть
+    # в исходной схеме, но индекс создаём здесь, рядом с остальными,
+    # чтобы старая база получила его тем же проходом, что и ALTER.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sent_campaign_status_target "
+        "ON sent(campaign, status, target)"
+    )
+    # deleted и dm_block появляются ALTER'ом выше. Частичный индекс повторяет
+    # фильтр очереди, поэтому ORDER BY collected_at не сортирует всю таблицу.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_members_dm_collected ON members(collected_at) "
+        "WHERE is_bot=0 AND COALESCE(deleted, 0)=0 AND COALESCE(dm_block, '')=''"
+    )
     conn.execute("INSERT OR IGNORE INTO accounts(name,session,added_at) VALUES('main',?,?)",
                  (LEGACY_SESSION, now_iso()))
     conn.commit()
@@ -775,9 +788,12 @@ def dm_eligible_where(repeat_ok=False):
         "m.user_id NOT IN (SELECT user_id FROM accounts WHERE user_id IS NOT NULL)",
     ]
     if not repeat_ok:
+        # CAST остаётся: цель «05» всё ещё исключает user_id 5.
+        # Обход с campaigns.kind использует idx_campaigns_kind и
+        # idx_sent_campaign_status_target вместо полного скана sent.
         parts.append(
-            "m.user_id NOT IN (SELECT CAST(s.target AS INTEGER) FROM sent s "
-            "JOIN campaigns c ON c.id=s.campaign WHERE c.kind='dm' AND s.status='ok')"
+            "m.user_id NOT IN (SELECT CAST(s.target AS INTEGER) FROM campaigns c "
+            "JOIN sent s ON s.campaign=c.id AND s.status='ok' WHERE c.kind='dm')"
         )
     return " AND ".join(parts)
 
@@ -790,42 +806,71 @@ NOT_YET_DMED = (
 )
 
 
+_MEMBER_INSERT = (
+    "INSERT OR IGNORE INTO members(user_id,username,first_name,last_name,is_bot,collected_at,"
+    "source_group,deleted,access_hash) VALUES(?,?,?,?,?,?,?,?,?)"
+)
+SCRAPE_CHUNK = 500
+
+
 def save_members(conn, users, gid):
-    """Пакетная вставка участников одной группы. Коммит остаётся на вызывающем."""
+    """Пакетная вставка участников одной группы. Коммит остаётся на вызывающем.
+
+    Возвращает число новых строк members. Повторный scrape не переписывает
+    ник, имена, collected_at и source_group. is_bot и deleted только
+    поднимаются в 1, access_hash пишется, когда новое значение не None.
+    """
     if not users:
         return 0
-    before = conn.execute("SELECT COUNT(*) c FROM members").fetchone()["c"]
+    collected_at = now_iso()
+    rows = []
+    bot_ids = []
+    deleted_ids = []
+    hashes = []
+    sources = []
     for user in users:
-        save_member(conn, user, gid)
-    after = conn.execute("SELECT COUNT(*) c FROM members").fetchone()["c"]
-    return after - before
+        uname = user.username or ""
+        is_bot = member_is_bot(user)
+        deleted = int(bool(getattr(user, "deleted", False)))
+        access_hash = getattr(user, "access_hash", None)
+        if access_hash is not None:
+            access_hash = int(access_hash)
+        rows.append((
+            user.id, uname, user.first_name or "", user.last_name or "", is_bot,
+            collected_at, gid, deleted, access_hash,
+        ))
+        if is_bot:
+            bot_ids.append((user.id,))
+        if deleted:
+            deleted_ids.append((user.id,))
+        if access_hash is not None:
+            hashes.append((access_hash, user.id, access_hash))
+        sources.append((user.id, gid))
+    before = conn.total_changes
+    conn.executemany(_MEMBER_INSERT, rows)
+    new_count = conn.total_changes - before
+    # INSERT OR IGNORE не обновляет уже существующую строку — иначе ник *bot
+    # навсегда остаётся is_bot=0, если первый scrape записал его человеком.
+    if bot_ids:
+        conn.executemany(
+            "UPDATE members SET is_bot=1 WHERE user_id=? AND COALESCE(is_bot, 0)=0",
+            bot_ids)
+    if deleted_ids:
+        conn.executemany(
+            "UPDATE members SET deleted=1 WHERE user_id=? AND COALESCE(deleted, 0)=0",
+            deleted_ids)
+    if hashes:
+        conn.executemany(
+            "UPDATE members SET access_hash=? WHERE user_id=? AND access_hash IS NOT ?",
+            hashes)
+    conn.executemany(
+        "INSERT OR IGNORE INTO member_sources(user_id,group_id) VALUES(?,?)",
+        sources)
+    return new_count
 
 
 def save_member(conn, u, gid):
-    uname = u.username or ""
-    is_bot = member_is_bot(u)
-    deleted = int(bool(getattr(u, "deleted", False)))
-    access_hash = getattr(u, "access_hash", None)
-    cur = conn.execute(
-        "INSERT OR IGNORE INTO members(user_id,username,first_name,last_name,is_bot,collected_at,"
-        "source_group,deleted,access_hash) VALUES(?,?,?,?,?,?,?,?,?)",
-        (u.id, uname, u.first_name or "", u.last_name or "", is_bot, now_iso(), gid,
-         deleted, access_hash))
-    # INSERT OR IGNORE не обновляет уже существующую строку — иначе ник *bot
-    # навсегда остаётся is_bot=0, если первый scrape записал его человеком.
-    sets, params = [], []
-    if is_bot:
-        sets.append("is_bot=1")
-    if deleted:
-        sets.append("deleted=1")
-    if access_hash is not None:
-        sets.append("access_hash=?")
-        params.append(int(access_hash))
-    if sets:
-        params.append(u.id)
-        conn.execute(f"UPDATE members SET {', '.join(sets)} WHERE user_id=?", params)  # nosec B608
-    conn.execute("INSERT OR IGNORE INTO member_sources(user_id,group_id) VALUES(?,?)", (u.id, gid))
-    return cur.rowcount
+    return save_members(conn, [u], gid)
 
 
 async def cmd_scrape(args):
@@ -849,11 +894,24 @@ async def cmd_scrape(args):
             continue
         n = 0
         while True:
+            pending = []
+
+            def flush_pending():
+                nonlocal n
+                if not pending:
+                    return
+                n += save_members(conn, pending, gid)
+                pending.clear()
+
             try:
                 async for u in client.iter_participants(ent):
-                    n += save_member(conn, u, gid)
+                    pending.append(u)
+                    if len(pending) >= SCRAPE_CHUNK:
+                        flush_pending()
+                flush_pending()
                 break
             except FloodWaitError as e:
+                flush_pending()
                 conn.commit()
                 if e.seconds > 600:  # часовые/суточные паузы — смысл ждать теряет
                     conn.commit()
@@ -863,6 +921,7 @@ async def cmd_scrape(args):
                 await asyncio.sleep(e.seconds + 1)
                 continue
             except Exception as e:
+                flush_pending()
                 name = type(e).__name__
                 if "AdminRequired" in name or "Forbidden" in name or "ChatWriteForbidden" in name:
                     print(f"  группа {gid} «{ent.title}»: список участников закрыт "
@@ -884,7 +943,11 @@ def dm_targets(conn, group_id=None, repeat_ok=False, limit=None):
     Пустой профиль с username или access_hash остаётся: его можно адресовать.
     Имена людей, внутри которых есть буквы bot (Subbotina, Rabota), не отсекаются.
     """
-    q = f"SELECT m.* FROM members m WHERE {dm_eligible_where(repeat_ok)}"  # nosec B608
+    # Без group_id очередь читает почти всех людей по collected_at.
+    # idx_members_bot выглядит селективнее, пока нет ANALYZE, и тогда SQLite
+    # сортирует весь результат. Частичный индекс уже отсекает ботов и dm_block.
+    indexed = "" if group_id else " INDEXED BY idx_members_dm_collected"
+    q = f"SELECT m.* FROM members m{indexed} WHERE {dm_eligible_where(repeat_ok)}"  # nosec B608
     p = []
     if group_id:
         q += " AND m.user_id IN (SELECT user_id FROM member_sources WHERE group_id=?)"
@@ -1698,8 +1761,8 @@ def cmd_status(args):
         "  WHEN COALESCE(m.dm_block, '')!='' THEN m.dm_block"
         "  WHEN COALESCE(m.username, '')='' AND m.access_hash IS NULL THEN 'no_address'"
         "  WHEN m.user_id IN (SELECT user_id FROM blacklist) THEN 'blacklist'"
-        "  WHEN m.user_id IN (SELECT CAST(s.target AS INTEGER) FROM sent s "
-        "       JOIN campaigns c ON c.id=s.campaign WHERE c.kind='dm' AND s.status='ok')"
+        "  WHEN m.user_id IN (SELECT CAST(s.target AS INTEGER) FROM campaigns c "
+        "       JOIN sent s ON s.campaign=c.id AND s.status='ok' WHERE c.kind='dm')"
         "       THEN 'already_sent'"
         "  WHEN m.user_id IN (SELECT user_id FROM accounts WHERE user_id IS NOT NULL) THEN 'self'"
         "  ELSE 'in_queue' END reason FROM members m"
