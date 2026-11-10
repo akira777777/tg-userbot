@@ -15,6 +15,7 @@ userbot.db-shm
 test*.db
 exports/
 logs/
+locks/
 
 # окружение
 .venv/

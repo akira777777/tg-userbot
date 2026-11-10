@@ -49,6 +49,8 @@ class ControlSettings:
     poll_interval_seconds: float = 2.0
     lease_seconds: int = 300
     claim_batch_size: int = 5
+    command_timeout_seconds: float = 0.0
+    max_slot_concurrency: int = 5
     forward_privacy: bool = True
     api_host: str = "127.0.0.1"
     api_port: int = 8741
@@ -89,6 +91,8 @@ class ControlSettings:
             poll_interval_seconds=float(os.environ.get("POLL_INTERVAL_SECONDS", "2.0")),
             lease_seconds=int(os.environ.get("LEASE_SECONDS", "300")),
             claim_batch_size=int(os.environ.get("CLAIM_BATCH_SIZE", "5")),
+            command_timeout_seconds=float(os.environ.get("COMMAND_TIMEOUT_SECONDS", "0")),
+            max_slot_concurrency=int(os.environ.get("MAX_SLOT_CONCURRENCY", os.environ.get("CLAIM_BATCH_SIZE", "5"))),
             forward_privacy=os.environ.get("FORWARD_PRIVACY", "1") == "1",
             api_host=os.environ.get("API_HOST", "127.0.0.1"),
             api_port=int(os.environ.get("API_PORT", "8741")),

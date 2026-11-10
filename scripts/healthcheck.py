@@ -22,6 +22,11 @@ def check_control_settings() -> None:
     settings = ControlSettings.from_environment()
     if not settings.supabase_url or not settings.supabase_service_role_key:
         raise ConfigurationError("SUPABASE_URL and SUPABASE_SECRET_KEY are required for the worker")
+    locks = Path("locks")
+    locks.mkdir(parents=True, exist_ok=True)
+    probe = locks / ".healthcheck"
+    probe.write_text("ok", encoding="utf-8")
+    probe.unlink(missing_ok=True)
 
 
 def build_parser() -> argparse.ArgumentParser:

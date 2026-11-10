@@ -26,6 +26,9 @@ from urllib.parse import quote
 
 from aiohttp import web
 
+from control.cli_argv import build_web_args
+from control.slots import SlotLocker
+
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.environ.get("USERBOT_DB", ROOT / "userbot.db"))
 MEDIA_DIR = ROOT / "media_cache"
@@ -39,8 +42,8 @@ BOOT = uuid.uuid4().hex[:8]
 BLACKLIST_RE = re.compile(r"@?[A-Za-z0-9_]{2,64}")
 ACCOUNT_RE = re.compile(r"^[a-z0-9_\-]{1,32}$")
 NAME_RE = re.compile(r"^[a-z0-9_\-]{1,32}$")
-SESSION_ACTIONS = {"sync", "scrape", "watch", "broadcast", "dmsend", "probe", "privacy", "align"}
 FANOUT_ACTIONS = {"sync", "scrape", "watch", "probe", "privacy", "align"}
+SLOT_LOCKS = SlotLocker(ROOT / "locks")
 
 
 def now_iso():
@@ -137,179 +140,7 @@ def _seed_log_buffer():
 
 def build_args(p: dict):
     """Белый список действий -> (argv, slot_key, account). ValueError при ошибке."""
-    action = p.get("action")
-    account = str(p.get("account") or "main")
-    if (action in SESSION_ACTIONS
-            or (action == "media" and str(p.get("op")) in ("add", "pull", "sync"))) \
-            and not ACCOUNT_RE.fullmatch(account):
-        raise ValueError("аккаунт: только a-z 0-9 _ - (до 32)")
-    slot = account if action in SESSION_ACTIONS else "db"
-    tail = ["--account", account] if action in SESSION_ACTIONS else []
-
-    if action == "media":
-        op = str(p.get("op") or "list")
-        if op not in {"add", "pull", "sync", "del", "list"}:
-            raise ValueError("media: add|pull|sync|del|list")
-        val = str(p.get("value") or "").strip()
-        atail = ["--account", account]
-        if op == "add":
-            if not val or len(val) > 400 or any(c in val for c in "\r\n"):
-                raise ValueError("media add: корректный путь до файла")
-            return ["media", "add", val] + atail, account, account
-        if op == "pull":
-            lim = min(200, max(5, int(p.get("limit") or 30)))
-            return ["media", "pull", "--limit", str(lim)] + atail, account, account
-        if op == "sync":
-            if not val.isdigit():
-                raise ValueError("media sync: нужен id")
-            return ["media", "sync", val] + atail, account, account
-        if op == "del":
-            if not val.isdigit():
-                raise ValueError("media del: нужен id")
-            return ["media", "del", val], "db", account
-        return ["media", "list"], "db", account
-    if action == "sync":
-        return ["groups", "--sync"] + tail, slot, account
-    if action == "export":
-        return ["export"], slot, account
-    if action == "cloud":
-        op = str(p.get("op") or "push")
-        if op not in {"push", "status", "test"}:
-            raise ValueError("cloud: push|status|test")
-        return ["cloud", op], "cloud", "cloud"
-    if action == "watch":
-        return ["watch"] + tail, slot, account
-    if action == "status":
-        return ["status"], slot, account
-    if action == "scrape":
-        ids = [str(int(i)) for i in (p.get("ids") or [])][:200]
-        return ["scrape"] + (["--groups"] + ids if ids else []) + tail, slot, account
-    if action == "probe":
-        args = ["groups", "--probe"] + tail
-        if p.get("keep"):
-            args.append("--keep")
-        return args, slot, account
-    if action == "privacy":
-        return ["privacy"] + (["--all"] if p.get("all") else tail), \
-            ("conductor" if p.get("all") else slot), account
-    if action == "align":
-        args = ["align"] + tail
-        if p.get("limit"):
-            args += ["--limit", str(min(50, int(p["limit"])))]
-        if p.get("dry"):
-            args.append("--dry-run")
-        return args, slot, account
-    if action == "compare":
-        other = str(p.get("other") or "main")
-        if not ACCOUNT_RE.fullmatch(other):
-            raise ValueError("compare: некорректное имя второго аккаунта")
-        return ["compare", "--other", other] + tail, slot, account
-    if action == "accounts":
-        op = str(p.get("op", "list"))
-        if op not in {"list", "enable", "disable", "budget", "import", "remove"}:
-            raise ValueError("accounts: неизвестная операция")
-        argv = ["accounts", op]
-        name = str(p.get("name") or "")
-        if name:
-            if not NAME_RE.fullmatch(name):
-                raise ValueError("accounts: некорректное имя")
-            argv.append(name)
-        val = str(p.get("value") or "")
-        if val:
-            if len(val) > 200 or any(c in val for c in "\r\n"):
-                raise ValueError("accounts: некорректное значение")
-            argv.append(val)
-        if op in ("enable", "disable", "budget", "import", "remove") and not name:
-            raise ValueError("accounts: нужно имя")
-        if op == "budget":
-            if not val.isdigit() or int(val) > 500:
-                raise ValueError("budget: число 0..500")
-        return argv, slot, account
-    if action == "blacklist_add":
-        v = str(p.get("value", "")).strip()
-        if not BLACKLIST_RE.fullmatch(v):
-            raise ValueError("blacklist: только @ник (A-Za-z0-9_) или числовой id")
-        reason = str(p.get("reason", "web")).strip()[:64]
-        if reason.startswith("-"):
-            reason = " " + reason
-        return ["blacklist", "add", v, "--reason", reason or "web"], slot, account
-    if action in ("broadcast", "dmsend"):
-        text = str(p.get("text", "")).strip()[:MAX_TEXT]
-        mid = str(p.get("media") or "")
-        if not text and not mid.isdigit():
-            raise ValueError("нужен текст или медиа (или и то, и другое)")
-        args = [action]
-        if text:
-            args += ["--text", text]
-        if mid.isdigit():
-            args += ["--media", mid]
-        if p.get("dry"):
-            args.append("--dry-run")
-        try:
-            lo = max(0.0, float(p.get("delay_min", 0) or 0))
-            hi = max(0.0, float(p.get("delay_max", 0) or 0))
-        except (TypeError, ValueError):
-            raise ValueError("некорректные задержки")
-        if hi > 0:
-            args += ["--delay-min", str(lo), "--delay-max", str(hi)]
-        if p.get("max_runs"):
-            args += ["--max-runs", str(int(p["max_runs"]))]
-        if action == "dmsend":
-            if p.get("group"):
-                args += ["--group", str(int(p["group"]))]
-            args += ["--limit", str(max(1, int(p.get("limit", 20) or 20)))]
-            if p.get("repeat_ok"):
-                args.append("--repeat-ok")
-        else:
-            ids = [str(int(i)) for i in (p.get("ids") or [])][:200]
-            if ids:
-                args += ["--ids"] + ids
-            if p.get("repeat_ok"):
-                args.append("--repeat-ok")
-        return args + tail, slot, account
-    if action == "conduct":
-        kind = str(p.get("kind") or "")
-        if kind not in ("dm", "broadcast"):
-            raise ValueError("conduct: kind только dm|broadcast")
-        text = str(p.get("text", "")).strip()[:MAX_TEXT]
-        mid = str(p.get("media") or "")
-        if not text and not mid.isdigit():
-            raise ValueError("нужен текст или медиа (или и то, и другое)")
-        args = ["conduct", "--what", kind]
-        if text:
-            args += ["--text", text]
-        if mid.isdigit():
-            args += ["--media", mid]
-        if p.get("dry"):
-            args.append("--dry-run")
-        if p.get("limit"):
-            args += ["--limit", str(int(p["limit"]))]
-        if kind == "dm" and p.get("group"):
-            args += ["--group", str(int(p["group"]))]
-        if kind == "broadcast" and p.get("ids"):
-            args += ["--ids"] + [str(int(i)) for i in p["ids"][:200]]
-        if p.get("repeat_ok"):
-            args.append("--repeat-ok")
-        if p.get("accounts"):
-            accs = [str(a) for a in p["accounts"]]
-            for a in accs:
-                if not ACCOUNT_RE.fullmatch(a):
-                    raise ValueError(f"conduct: некорректное имя аккаунта {a!r}")
-            args += ["--accounts"] + accs
-        if p.get("window"):
-            w = float(p["window"])
-            if not (0.1 <= w <= 24):
-                raise ValueError("conduct: окно 0.1..24 ч")
-            args += ["--window", str(w)]
-        try:
-            lo = max(0.0, float(p.get("delay_min", 0) or 0))
-            hi = max(0.0, float(p.get("delay_max", 0) or 0))
-        except (TypeError, ValueError):
-            raise ValueError("некорректные задержки")
-        if hi > 0:
-            args += ["--delay-min", str(lo), "--delay-max", str(hi)]
-        return args, "conductor", "conductor"
-    raise ValueError(f"неизвестное действие: {action}")
+    return build_web_args(p)
 
 
 def account_status(name):
@@ -373,6 +204,13 @@ async def run_job(args, label, account, slot):
     cmd = [PY, str(ROOT / "bot.py")] + args
     BUS.publish({"type": "job", "account": account,
                  "text": f"▶ запуск: bot.py {label}", "job": label})
+    held = await SLOT_LOCKS.acquire(slot)
+    if not held:
+        BUS.publish({"type": "done", "account": account, "job": label,
+                     "text": f"■ слот занят ({label} @ {account})"})
+        if BUS.jobs.get(slot) and BUS.jobs[slot]["name"] == label:
+            BUS.jobs.pop(slot, None)
+        return
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd, cwd=str(ROOT),
@@ -399,6 +237,7 @@ async def run_job(args, label, account, slot):
         BUS.publish({"type": "done", "account": account, "job": label,
                      "text": f"■ сбой запуска ({type(e).__name__}: {e})"})
     finally:
+        await SLOT_LOCKS.release(slot)
         if BUS.jobs.get(slot) and BUS.jobs[slot]["name"] == label:
             BUS.jobs.pop(slot, None)
 

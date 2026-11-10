@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import signal
+from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 from control.account_alias import AccountAliasMapper
+from control.cli_argv import slot_key_for_kind
 from control.config import ControlSettings
 from control.executor import UserbotRuntime
 from control.models import CommandKind, CommandRecord, CommandStatus, TelegramIdentity
-from control.policy import CommandPolicy
-from control.queue import QueueRepository
+from control.policy import CommandPolicy, Redactor
 from control.privacy_forward import ForwardPrivacyManager
+from control.queue import QueueRepository
+
+log = logging.getLogger("control.worker")
 
 
 class ControlWorker:
@@ -40,10 +46,12 @@ class ControlWorker:
             except (NotImplementedError, OSError):
                 pass  # Windows may not support all signals
 
-        print(
-            f"Контрольный воркер запущен: worker={self._settings.worker_id}, "
-            f"poll={self._settings.poll_interval_seconds}s, "
-            f"lease={self._settings.lease_seconds}s"
+        log.info(
+            self._safe(
+                f"Контрольный воркер запущен: worker={self._settings.worker_id}, "
+                f"poll={self._settings.poll_interval_seconds}s, "
+                f"lease={self._settings.lease_seconds}s"
+            )
         )
 
         while self._running:
@@ -51,7 +59,7 @@ class ControlWorker:
             try:
                 claimed_count = await self._tick()
             except Exception as exc:  # noqa: BLE001 - worker must not die on transient error
-                print(f"Ошибка тика воркера: {self._forward_privacy.redact_log_line(str(exc))}")
+                log.error(self._safe(f"Ошибка тика воркера: {exc}"))
             if not self._running:
                 break
             if claimed_count < self._settings.claim_batch_size:
@@ -68,11 +76,18 @@ class ControlWorker:
         )
         if not claimed:
             return 0
-
+        groups: dict[str, list[CommandRecord]] = defaultdict(list)
         for record in claimed:
-            if not self._running:
-                break
-            await self._process(record)
+            groups[slot_key_for_kind(record.request.kind, record.request.account)].append(record)
+        cap = max(1, min(self._settings.max_slot_concurrency, self._settings.claim_batch_size, len(groups)))
+        sem = asyncio.Semaphore(cap)
+
+        async def run_slot(records: list[CommandRecord]) -> None:
+            async with sem:
+                for item in records:
+                    await self._process(item)
+
+        await asyncio.gather(*(run_slot(items) for items in groups.values()))
         return len(claimed)
 
     async def _process(self, record: CommandRecord) -> None:
@@ -93,9 +108,7 @@ class ControlWorker:
         if not decision["ok"]:
             self._finish_rejected(record, decision["error"])
             return
-        command_id = getattr(record.request.payload, "command_id", None)
-        if record.request.kind == CommandKind.STOP and command_id:
-            self._queue.cancel(command_id, self._settings.worker_id)
+        await self._maybe_stop(record)
 
         stop = asyncio.Event()
         lease = asyncio.create_task(self._keep_lease(record, renewed.version, stop))
@@ -106,7 +119,18 @@ class ControlWorker:
             version = await lease
         if version is None:
             return
+        self._finish_result(record, result)
 
+    async def _maybe_stop(self, record: CommandRecord) -> None:
+        command_id = getattr(record.request.payload, "command_id", None)
+        if record.request.kind != CommandKind.STOP or not command_id:
+            return
+        self._queue.cancel(command_id, self._settings.worker_id)
+        terminate = getattr(self._runtime, "terminate_command", None)
+        if terminate is not None:
+            await terminate(command_id)
+
+    def _finish_result(self, record: CommandRecord, result: dict[str, Any]) -> None:
         account_alias = result.get("redacted_account", "<account>")
         summary = {
             "ok": bool(result.get("ok")),
@@ -119,37 +143,33 @@ class ControlWorker:
                 status=CommandStatus.SUCCEEDED,
                 result_summary=summary,
             )
-            self._queue.append_event(
-                command_id=record.id,
-                sequence=2,
-                level="info",
-                event_type="completed",
-                safe_message=f"команда выполнена ({account_alias})",
-            )
+            self._emit(record.id, 2, "info", "completed", f"команда выполнена ({account_alias})")
             return
         self._queue.fail(
             command_id=record.id,
             error_code=str(result.get("error", "unknown"))[:64],
             result_summary=summary,
         )
-        self._queue.append_event(
-            command_id=record.id,
-            sequence=2,
-            level="error",
-            event_type="failed",
-            safe_message=f"ошибка выполнения ({account_alias})",
-        )
+        self._emit(record.id, 2, "error", "failed", f"ошибка выполнения ({account_alias})")
 
     def _finish_rejected(self, record: CommandRecord, error: str) -> None:
         summary = {"ok": False, "error": error}
         self._queue.fail(command_id=record.id, error_code="policy", result_summary=summary)
-        self._queue.append_event(
-            command_id=record.id,
-            sequence=2,
-            level="error",
-            event_type="rejected",
-            safe_message=error[:200],
+        self._emit(record.id, 2, "error", "rejected", error[:200])
+
+    def _emit(self, command_id: UUID, sequence: int, level: str, event_type: str, safe_message: str) -> None:
+        ok = self._queue.append_event(
+            command_id=command_id,
+            sequence=sequence,
+            level=level,
+            event_type=event_type,
+            safe_message=safe_message,
         )
+        if not ok:
+            log.warning(self._safe(f"не удалось записать событие {event_type} для {command_id}"))
+
+    def _safe(self, text: str) -> str:
+        return self._forward_privacy.redact_log_line(Redactor.redact(text))
 
     async def _keep_lease(self, record: CommandRecord, version: int, stop: asyncio.Event) -> int | None:
         while not stop.is_set():
@@ -163,18 +183,22 @@ class ControlWorker:
                     lease_seconds=self._settings.lease_seconds,
                 )
                 if renewed is None:
+                    terminate = getattr(self._runtime, "terminate_command", None)
+                    if terminate is not None:
+                        await terminate(record.id)
                     return None
                 version = renewed.version
         return version
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = ControlSettings.from_environment()
     worker = ControlWorker(settings)
     try:
         asyncio.run(worker.run())
     except KeyboardInterrupt:
-        print("воркер остановлен")
+        log.info("воркер остановлен")
 
 
 if __name__ == "__main__":

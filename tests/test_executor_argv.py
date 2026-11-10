@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from control.cli_argv import build_control_cli, slot_key_for_kind
 from control.config import ControlSettings
 from control.executor import UserbotRuntime
 from control.models import (
@@ -22,16 +23,20 @@ from control.models import (
     ConductPayload,
     DmSendPayload,
     ReadPayload,
+    StopPayload,
 )
+from control.slots import SlotLocker
 
 
-def _runtime() -> UserbotRuntime:
+def _runtime(tmp_path: Path | None = None) -> UserbotRuntime:
     settings = ControlSettings(
         bot_token="token",
         mini_app_url="https://example.test/app",
         owner_telegram_ids=frozenset({1}),
     )
-    return UserbotRuntime(settings, Path("."))
+    root = tmp_path or Path(".")
+    locker = SlotLocker((tmp_path or Path(".")) / "locks") if tmp_path else None
+    return UserbotRuntime(settings, root, locker=locker)
 
 
 def _record(kind: CommandKind, mode: CommandMode, payload, account: str = "main") -> CommandRecord:
@@ -165,3 +170,94 @@ async def test_run_command_redacts_output_and_account_name(monkeypatch: pytest.M
     assert "work2" not in result["redacted_account"]
     assert "1234567890" not in result["output"]
     assert "<user_id>" in result["output"]
+
+
+def test_shared_cli_slot_keys():
+    status = build_control_cli(CommandKind.STATUS, ReadPayload(), "main", CommandMode.READ)
+    groups = build_control_cli(CommandKind.GROUPS, ReadPayload(), "work2", CommandMode.READ)
+    dry = build_control_cli(
+        CommandKind.BROADCAST, BroadcastPayload(text="hi"), "main", CommandMode.DRY_RUN
+    )
+    live = build_control_cli(
+        CommandKind.BROADCAST, BroadcastPayload(text="hi"), "main", CommandMode.LIVE
+    )
+    assert status is not None and status.slot_key == "db" and "--dry-run" not in status.argv
+    assert groups is not None and groups.slot_key == "db"
+    assert dry is not None and dry.slot_key == "main" and dry.argv[-1] == "--dry-run"
+    assert live is not None and "--dry-run" not in live.argv
+    assert slot_key_for_kind(CommandKind.CONDUCT, "main") == "conductor"
+
+
+class _HoldProc:
+    def __init__(self, started: asyncio.Event, release: asyncio.Event) -> None:
+        self.returncode: int | None = None
+        self._started = started
+        self._release = release
+
+    async def communicate(self):
+        self._started.set()
+        await self._release.wait()
+        if self.returncode is None:
+            self.returncode = 0
+        return b"ok", b""
+
+    def terminate(self) -> None:
+        self.returncode = 1
+        self._release.set()
+
+    def kill(self) -> None:
+        self.terminate()
+
+    async def wait(self):
+        await self._release.wait()
+
+
+@pytest.mark.asyncio
+async def test_same_account_slot_rejects_second_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    runtime = _runtime(tmp_path)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_exec(*_cmd, **_kwargs):
+        return _HoldProc(started, release)
+
+    monkeypatch.setattr("control.executor.asyncio.create_subprocess_exec", fake_exec)
+    first = asyncio.create_task(
+        runtime.run_command(
+            _record(CommandKind.BROADCAST, CommandMode.DRY_RUN, BroadcastPayload(text="a"), "main")
+        )
+    )
+    await started.wait()
+    second = await runtime.run_command(
+        _record(CommandKind.BROADCAST, CommandMode.DRY_RUN, BroadcastPayload(text="b"), "main")
+    )
+    assert second["ok"] is False
+    assert second["error"] == "busy"
+    release.set()
+    assert (await first)["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_stop_terminates_in_flight_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    runtime = _runtime(tmp_path)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_exec(*_cmd, **_kwargs):
+        return _HoldProc(started, release)
+
+    monkeypatch.setattr("control.executor.asyncio.create_subprocess_exec", fake_exec)
+    record = _record(
+        CommandKind.BROADCAST, CommandMode.DRY_RUN, BroadcastPayload(text="long"), "main"
+    )
+    task = asyncio.create_task(runtime.run_command(record))
+    await started.wait()
+    assert await runtime.terminate_command(record.id) is True
+    result = await task
+    assert result["ok"] is False
+    stop_argv = runtime._build_argv(CommandKind.STOP, StopPayload(account="main"), "main")
+    assert stop_argv == ["stop", "--account", "main"]
