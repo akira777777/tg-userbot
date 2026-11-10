@@ -11,6 +11,7 @@ const REFRESH_MS = 15_000;
 function renderedSnapshot(data) {
   return JSON.stringify({
     accounts: data.accounts ?? [],
+    groups: data.groups ?? [],
     campaigns: data.campaigns ?? [],
     stats: data.stats ?? [],
     schemaMissing: Boolean(data.schemaMissing),
@@ -130,7 +131,11 @@ export default function Home() {
         <>
           {error && <p className="notice error" role="alert">{error}</p>}
           <SnapshotView data={data} />
-          <CommandForm onQueued={() => setRefreshKey((value) => value + 1)} />
+          <CommandForm
+            accounts={data.accounts ?? []}
+            groups={data.groups ?? []}
+            onQueued={() => setRefreshKey((value) => value + 1)}
+          />
           <CommandTimeline refreshKey={refreshKey} />
         </>
       )}

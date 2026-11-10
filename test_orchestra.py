@@ -1,4 +1,5 @@
 import sys, os, sqlite3, tempfile
+from pathlib import Path
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 # полная изоляция от продакшн-файлов: своя БД, свои sessions/ и media_cache/
@@ -28,7 +29,8 @@ imp = A(); imp.op, imp.name, imp.value, imp.account, imp.purge = \
     "import", "work2", DUMMY, "main", False
 bot.cmd_accounts(imp)
 row = conn.execute("SELECT * FROM accounts WHERE name='work2'").fetchone()
-assert row and row["session"].endswith(r"sessions\work2.session"), row
+session = Path(row["session"])
+assert row and session.name == "work2.session" and session.parent.name == "sessions", row
 import os.path
 assert os.path.exists(row["session"])
 

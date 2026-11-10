@@ -95,12 +95,10 @@ class UserbotRuntime:
     ) -> list[str] | None:
         """Переводит типизированный payload в argv bot.py."""
         data = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload or {})
-        if kind == CommandKind.STATUS:
-            return ["status", "--account", account]
+        if kind in (CommandKind.STATUS, CommandKind.CAMPAIGNS):
+            return ["status"]
         if kind == CommandKind.GROUPS:
             return ["groups", "--list", "--account", account]
-        if kind == CommandKind.CAMPAIGNS:
-            return ["status", "--account", account]
         if kind == CommandKind.MEDIA_LIST:
             return ["media", "list", "--account", account]
         if kind == CommandKind.BLACKLIST_ADD:
@@ -141,6 +139,8 @@ class UserbotRuntime:
                 args += ["--window", str(data["window_hours"])]
             if data.get("repeat_ok"):
                 args += ["--repeat-ok"]
+            if account and account != "all":
+                args += ["--accounts", account]
             return self._with_mode(args, mode)
         return None
 

@@ -7,9 +7,16 @@ import { formatDateTime, formatRelative } from "../lib/format";
 function statusClass(status) {
   if (status === "SUCCEEDED") return "ok";
   if (status === "FAILED") return "err";
-  if (status === "RUNNING") return "warn";
-  if (status === "QUEUED") return "info";
+  if (status === "RUNNING" || status === "CLAIMED") return "warn";
+  if (status === "QUEUED" || status === "PENDING") return "info";
   return "dim";
+}
+
+function errorText(command) {
+  if (command.error_code) return command.error_code;
+  const summary = command.result_summary;
+  if (summary && typeof summary.error === "string") return summary.error;
+  return "";
 }
 
 export default function CommandTimeline({ refreshKey = 0 }) {
@@ -72,8 +79,8 @@ export default function CommandTimeline({ refreshKey = 0 }) {
             <div className="event-meta">
               {MODE_LABELS[cmd.mode] || cmd.mode} · {formatDateTime(cmd.created_at)} · {formatRelative(cmd.created_at)}
             </div>
-            {cmd.error_code && <div className="event-meta" style={{ color: "var(--err)" }}>{cmd.error_code}</div>}
-            {cmd.status === "QUEUED" && (
+            {errorText(cmd) && <div className="event-meta" style={{ color: "var(--err)" }}>{errorText(cmd)}</div>}
+            {(cmd.status === "PENDING" || cmd.status === "QUEUED") && (
               <button className="ghost" type="button" disabled={busyId === cmd.id} onClick={() => cancel(cmd.id)} style={{ marginTop: 8 }}>
                 {busyId === cmd.id ? "Отмена…" : "Отменить"}
               </button>

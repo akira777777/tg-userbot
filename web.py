@@ -15,6 +15,7 @@ import collections
 import json
 import os
 import re
+import signal
 import sqlite3
 import sys
 import time
@@ -327,15 +328,45 @@ def account_status(name):
         con.close()
 
 
-async def _kill_tree(pid):
+_KILL_GRACE_SECONDS = 0.2
+
+
+def _windows():
+    return os.name == "nt"
+
+
+def _pid_alive(pid):
     try:
-        p = await asyncio.create_subprocess_exec(
-            "taskkill", "/PID", str(pid), "/T", "/F",
-            stdout=asyncio.subprocess.DEVNULL)
-        await p.wait()
-        return True
-    except (OSError, ValueError):
+        os.kill(int(pid), 0)
+    except OSError:
         return False
+    return True
+
+
+async def _kill_tree(pid):
+    """Останавливает процесс задачи и его потомков. Windows — taskkill, POSIX — группа сессии."""
+    if _windows():
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "taskkill", "/PID", str(pid), "/T", "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            return proc.returncode == 0
+        except (OSError, ValueError):
+            return False
+    try:
+        os.killpg(int(pid), signal.SIGTERM)
+    except OSError:
+        return False
+    await asyncio.sleep(_KILL_GRACE_SECONDS)
+    if _pid_alive(pid):
+        try:
+            os.killpg(int(pid), signal.SIGKILL)
+        except OSError:
+            return False
+    return True
 
 
 async def run_job(args, label, account, slot):
@@ -346,7 +377,8 @@ async def run_job(args, label, account, slot):
         proc = await asyncio.create_subprocess_exec(
             *cmd, cwd=str(ROOT),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            **({} if _windows() else {"start_new_session": True}))
         job = BUS.jobs.get(slot)
         if not job or job["name"] != label:  # слот уже перешел другой задаче — не мешаем
             proc.kill()

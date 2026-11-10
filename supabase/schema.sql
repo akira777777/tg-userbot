@@ -66,8 +66,11 @@ create table if not exists control_commands (
   finished_at timestamptz,
   result_summary jsonb,
   error_code text,
-  version integer not null default 0
+  version integer not null default 0,
+  confirmation_nonce uuid
 );
+
+alter table control_commands add column if not exists confirmation_nonce uuid;
 
 create unique index if not exists idx_control_commands_idempotent
   on control_commands (owner_telegram_id, idempotency_key);
@@ -95,54 +98,56 @@ create table if not exists control_confirmations (
   created_at timestamptz not null default now()
 );
 
--- RPC: атоматьное взятие команд в аренду воркером
-do $migration$
+-- RPC: атомарное взятие команд в аренду воркером.
+-- DROP обязателен: Postgres не меняет тип строки через CREATE OR REPLACE.
+drop function if exists claim_control_commands(text, integer, integer);
+
+create or replace function claim_control_commands(
+  p_worker_id text,
+  p_batch_size integer default 5,
+  p_lease_seconds integer default 300
+)
+returns table (
+  id uuid,
+  idempotency_key uuid,
+  owner_telegram_id bigint,
+  kind text,
+  mode text,
+  account text,
+  payload jsonb,
+  status text,
+  created_at timestamptz,
+  claimed_at timestamptz,
+  lease_expires_at timestamptz,
+  version integer,
+  confirmation_nonce uuid
+)
+language plpgsql as $function$
+declare
+  v_now timestamptz := now();
+  v_lease timestamptz := v_now + (p_lease_seconds || ' seconds')::interval;
 begin
-  create or replace function claim_control_commands(
-    p_worker_id text,
-    p_batch_size integer default 5,
-    p_lease_seconds integer default 300
+  -- Возвращаем команды, которые можно взять: PENDING или истёкший lease у RUNNING/CLAIMED
+  return query
+  update control_commands as queued
+  set status = 'CLAIMED',
+      claimed_by = p_worker_id,
+      claimed_at = v_now,
+      lease_expires_at = v_lease,
+      version = queued.version + 1
+  where queued.id in (
+    select candidate.id from control_commands as candidate
+    where (candidate.status = 'PENDING'
+           or (candidate.status in ('CLAIMED','RUNNING') and candidate.lease_expires_at < v_now))
+    order by candidate.created_at asc
+    limit p_batch_size
+    for update skip locked
   )
-  returns table (
-    id uuid,
-    idempotency_key uuid,
-    owner_telegram_id bigint,
-    kind text,
-    mode text,
-    account text,
-    payload jsonb,
-    status text,
-    created_at timestamptz,
-    claimed_at timestamptz,
-    lease_expires_at timestamptz,
-    version integer
-  )
-  language plpgsql as $function$
-  declare
-    v_now timestamptz := now();
-    v_lease timestamptz := v_now + (p_lease_seconds || ' seconds')::interval;
-  begin
-    -- Возвращаем команды, которые можно взять: PENDING или истёкший lease у RUNNING/CLAIMED
-    return query
-    update control_commands
-    set status = 'CLAIMED',
-        claimed_by = p_worker_id,
-        claimed_at = v_now,
-        lease_expires_at = v_lease,
-        version = version + 1
-    where id in (
-      select id from control_commands
-      where (status = 'PENDING'
-             or (status in ('CLAIMED','RUNNING') and lease_expires_at < v_now))
-      order by created_at asc
-      limit p_batch_size
-      for update skip locked
-    )
-    returning id, idempotency_key, owner_telegram_id, kind, mode, account,
-              payload, status, created_at, claimed_at, lease_expires_at, version;
-  end;
-  $function$;
-end $migration$;
+  returning queued.id, queued.idempotency_key, queued.owner_telegram_id, queued.kind, queued.mode, queued.account,
+            queued.payload, queued.status, queued.created_at, queued.claimed_at, queued.lease_expires_at,
+            queued.version, queued.confirmation_nonce;
+end;
+$function$;
 
 -- RLS: только service_role может читать/писать контрольные таблицы
 alter table control_commands enable row level security;
