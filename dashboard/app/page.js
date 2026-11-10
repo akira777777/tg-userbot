@@ -74,16 +74,8 @@ export default function Home() {
     };
     async function start() {
       try {
-        const initData = window.Telegram?.WebApp?.initData;
-        if (!initData) throw new Error("Открой панель кнопкой из чата с ботом Telegram.");
-        window.Telegram.WebApp.ready();
-        window.Telegram.WebApp.expand();
-        const session = await fetch("/api/control/session", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ initData }),
-        });
-        if (!session.ok) throw new Error("Telegram не подтвердил доступ к панели.");
+        window.Telegram?.WebApp?.ready?.();
+        window.Telegram?.WebApp?.expand?.();
         if (cancelled) return;
         await load();
         setState("ready");
@@ -110,7 +102,7 @@ export default function Home() {
           <p className="eyebrow">TG USERBOT</p>
           <h1>Панель управления</h1>
           <p className="muted">
-            Доступ только для владельца через Telegram.
+            Панель открыта. Команды уходят в локальный воркер.
             {fetchedAt && <> Обновлено {formatRelative(fetchedAt)}.</>}
           </p>
         </div>
@@ -122,7 +114,7 @@ export default function Home() {
       </header>
       {state === "authorizing" && (
         <>
-          <p className="notice">Проверяю вход через Telegram…</p>
+          <p className="notice">Загружаю панель…</p>
           <div className="skeleton" />
         </>
       )}

@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 
 /**
  * Серверный клиент очереди команд Supabase (control_commands / control_command_events).
- * Используется только из authenticated /api/control/* роутов после requireOwnerSession().
+ * Вызывается из /api/control/* без проверки входа.
  */
 
 function setting(name) {

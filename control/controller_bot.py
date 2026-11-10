@@ -1,4 +1,4 @@
-"""Owner-only Telegram entry point for the Mini App."""
+"""Telegram entry point for the control panel."""
 
 from __future__ import annotations
 
@@ -18,22 +18,14 @@ def make_web_app_keyboard(mini_app_url: str) -> ReplyKeyboardMarkup:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    if user is None or user.id not in context.bot_data["owner_ids"]:
-        if update.effective_message:
-            await update.effective_message.reply_text("Доступ к панели ограничен.")
-        return
     if update.effective_message:
         await update.effective_message.reply_text(
-            "Панель управления готова. Открой её кнопкой ниже.",
+            "Панель управления готова. Открой её кнопкой ниже или по прямой ссылке.",
             reply_markup=make_web_app_keyboard(context.bot_data["mini_app_url"]),
         )
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    if user is None or user.id not in context.bot_data["owner_ids"]:
-        return
     if update.effective_message:
         await update.effective_message.reply_text("Контроллер запущен. Открой панель через /start.")
 
