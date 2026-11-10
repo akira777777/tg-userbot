@@ -1,16 +1,5 @@
 {
   "version": 2,
   "framework": "nextjs",
-  "buildCommand": "cd dashboard && npm ci && npm run build",
-  "devCommand": "cd dashboard && npm run dev",
-  "installCommand": "cd dashboard && npm ci",
-  "regions": ["iad1"],
-  "env": {
-    "BOT_TOKEN": "@bot_token",
-    "MINI_APP_URL": "@mini_app_url",
-    "OWNER_TELEGRAM_IDS": "@owner_telegram_ids",
-    "SUPABASE_URL": "@supabase_url",
-    "SUPABASE_SECRET_KEY": "@supabase_secret_key",
-    "SESSION_TTL_MINUTES": "30"
-  }
+  "regions": ["iad1"]
 }

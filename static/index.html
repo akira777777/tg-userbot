@@ -432,7 +432,16 @@ async function refresh(){
     const r = await fetch('/api/state');
     s = await r.json();
     if (!r.ok || s.error){ $('connTxt').textContent = 'ошибка: ' + (s.error||r.status); return; }
-  }catch(e){ $('connTxt').textContent='нет связи'; return; }
+  }catch(e){
+    $('conn').classList.add('off');
+    $('connTxt').textContent='нет связи';
+    if (!window.__panelOffline) {
+      window.__panelOffline = true;
+      addLog({type:'job', text:'⚠ панель недоступна, кнопки не доходят до сервера'});
+    }
+    return;
+  }
+  window.__panelOffline = false;
   state = s;
   $('st_acc').textContent = s.accounts.length;
   $('st_groups').textContent = s.groups;
@@ -499,26 +508,48 @@ async function refresh(){
   }
 }
 
+async function readJson(response){
+  try { return await response.json(); }
+  catch { return {error: 'ответ панели не разобран (' + response.status + ')'}; }
+}
 async function run(body){
-  const r = await fetch('/api/run', {method:'POST',
-      headers: authHeaders(true), body: JSON.stringify(body)});
-  const j = await r.json();
-  if (j.error) addLog({type:'job', account: body.account||'*', text:'⚠ ' + j.error});
+  const account = body.account || '*';
+  try {
+    const r = await fetch('/api/run', {method:'POST',
+        headers: authHeaders(true), body: JSON.stringify(body)});
+    const j = await readJson(r);
+    if (!r.ok || j.error) addLog({type:'job', account, text:'⚠ ' + (j.error || r.status)});
+  } catch (e) {
+    addLog({type:'job', account, text:'⚠ панель недоступна'});
+  }
   setTimeout(refresh, 250);
 }
 async function fanout(action){
-  const r = await fetch('/api/fanout', {method:'POST',
-      headers: authHeaders(true), body: JSON.stringify({action})});
-  const j = await r.json();
-  for (const [acc,res] of Object.entries(j.results||{}))
-    addLog({type:'job', account:acc, text:`fanout ${action}: ${res}`});
+  try {
+    const r = await fetch('/api/fanout', {method:'POST',
+        headers: authHeaders(true), body: JSON.stringify({action})});
+    const j = await readJson(r);
+    if (!r.ok || j.error) {
+      addLog({type:'job', text:'⚠ ' + (j.error || r.status)});
+    } else if (!Object.keys(j.results || {}).length) {
+      addLog({type:'job', text:'⚠ fanout ' + action + ': нет включённых аккаунтов'});
+    }
+    for (const [acc,res] of Object.entries(j.results||{}))
+      addLog({type:'job', account:acc, text:`fanout ${action}: ${res}`});
+  } catch (e) {
+    addLog({type:'job', text:'⚠ панель недоступна'});
+  }
   setTimeout(refresh, 250);
 }
 async function stop(account){
-  const r = await fetch('/api/stop', {method:'POST',
-      headers: authHeaders(true), body: JSON.stringify({account})});
-  const j = await r.json();
-  if (j.error || !j.ok) addLog({type:'job', account: account||'*', text:'⚠ ' + (j.error || 'нечего останавливать')});
+  try {
+    const r = await fetch('/api/stop', {method:'POST',
+        headers: authHeaders(true), body: JSON.stringify({account})});
+    const j = await readJson(r);
+    if (!r.ok || j.error || !j.ok) addLog({type:'job', account: account||'*', text:'⚠ ' + (j.error || 'нечего останавливать')});
+  } catch (e) {
+    addLog({type:'job', account: account||'*', text:'⚠ панель недоступна'});
+  }
   setTimeout(refresh, 500);
 }
 document.querySelectorAll('button[data-act]').forEach(b => b.onclick = () => {
@@ -659,8 +690,19 @@ $('webToken').addEventListener('input', () => sessionStorage.setItem(TOKEN_KEY, 
 let lastSeq = 0, lastBoot = null;
 function connect(){
   const es = new EventSource('/api/stream');
-  es.onopen = () => { $('conn').classList.remove('off'); $('connTxt').textContent = 'live'; };
-  es.onerror = () => { $('conn').classList.add('off'); $('connTxt').textContent = 'переподключение…'; };
+  es.onerror = () => {
+    $('conn').classList.add('off');
+    $('connTxt').textContent = 'переподключение…';
+    if (!window.__streamOffline) {
+      window.__streamOffline = true;
+      addLog({type:'job', text:'⚠ журнал отключился, идёт переподключение'});
+    }
+  };
+  es.onopen = () => {
+    window.__streamOffline = false;
+    $('conn').classList.remove('off');
+    $('connTxt').textContent = 'live';
+  };
   es.onmessage = e => { const ev = JSON.parse(e.data);
     if (ev.boot && ev.boot !== lastBoot) { lastBoot = ev.boot; lastSeq = 0; }
     if (ev.seq && ev.seq <= lastSeq) return;

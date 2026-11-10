@@ -107,6 +107,30 @@ class Bus:
 
 BUS = Bus()
 RUN_LOCK = asyncio.Lock()   # reserve: проверка+занятие слота атомарны
+_LOG_LINE = re.compile(r"^(\d\d:\d\d:\d\d) \[([^\]]+)\] (\S+)\s?(.*)$")
+
+
+def _seed_log_buffer():
+    """Показать хвост журнала после перезапуска панели, не дописывая файл."""
+    if not LOG_FILE.exists():
+        return
+    try:
+        lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return
+    for line in lines[-400:]:
+        match = _LOG_LINE.match(line)
+        if not match:
+            continue
+        BUS.seq += 1
+        BUS.buffer.append({
+            "seq": BUS.seq,
+            "boot": BOOT,
+            "ts": match.group(1),
+            "account": match.group(2),
+            "type": match.group(3),
+            "text": match.group(4),
+        })
 
 
 # ---------------------------------------------------------------- команды ---
@@ -666,6 +690,7 @@ def main():
     logging.getLogger("asyncio").addFilter(_NoiseFilter())
 
     app = build_app()
+    _seed_log_buffer()
     print(f"Панель: http://{HOST}:{PORT}  (Ctrl+C — остановить)")
     web.run_app(app, host=HOST, port=PORT, print=None)
 
