@@ -12,7 +12,6 @@ DB-задачи (export/status/blacklist/accounts) идут в отдельны�
 """
 import asyncio
 import collections
-import hmac
 import json
 import os
 import re
@@ -470,24 +469,6 @@ def read_state():
         con.close()
 
 
-def _web_token():
-    return os.environ.get("WEB_TOKEN", "").strip()
-
-
-def _write_authorized(request):
-    expected = _web_token()
-    presented = request.headers.get("X-Web-Token", "")
-    return len(expected) >= 16 and hmac.compare_digest(presented, expected)
-
-
-def _reject_write(request):
-    if _write_authorized(request):
-        return None
-    if len(_web_token()) < 16:
-        return web.json_response({"error": "WEB_TOKEN is not configured"}, status=503)
-    return web.json_response({"error": "unauthorized"}, status=401)
-
-
 async def api_state(request):
     st = read_state()
     if "error" in st:
@@ -496,9 +477,6 @@ async def api_state(request):
 
 
 async def api_run(request):
-    denied = _reject_write(request)
-    if denied:
-        return denied
     try:
         p = await request.json()
     except (json.JSONDecodeError, Exception) as e:
@@ -509,9 +487,6 @@ async def api_run(request):
 
 async def api_fanout(request):
     """Запустить действие сразу на всех включённых аккаунтах (по слоту на аккаунт)."""
-    denied = _reject_write(request)
-    if denied:
-        return denied
     try:
         p = await request.json()
     except Exception:
@@ -536,9 +511,6 @@ async def api_fanout(request):
 
 
 async def api_stop(request):
-    denied = _reject_write(request)
-    if denied:
-        return denied
     try:
         p = await request.json()
     except Exception:
@@ -601,9 +573,6 @@ async def api_media_file(request):
 
 async def api_media_upload(request):
     """multipart upload -> tmp в media_cache -> media add (в «Избранное» + кэш)."""
-    denied = _reject_write(request)
-    if denied:
-        return denied
     data = await request.post()
     up = data.get("file")
     if up is None or not hasattr(up, "file"):

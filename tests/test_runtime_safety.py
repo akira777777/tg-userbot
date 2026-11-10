@@ -61,19 +61,9 @@ def test_bot_parser_exposes_runtime_commands():
 
 
 @pytest.mark.asyncio
-async def test_local_panel_writes_fail_closed_without_token(monkeypatch):
-    monkeypatch.delenv("WEB_TOKEN", raising=False)
+async def test_local_panel_writes_without_token():
     async with TestClient(TestServer(web.build_app())) as client:
-        response = await client.post("/api/run", json={"action": "status"})
-        assert response.status == 503
-
-    monkeypatch.setenv("WEB_TOKEN", "0123456789abcdef")
-    async with TestClient(TestServer(web.build_app())) as client:
-        denied = await client.post("/api/run", json={"action": "status"})
-        assert denied.status == 401
-        accepted = await client.post(
-            "/api/run",
-            json={"action": "not-a-command"},
-            headers={"X-Web-Token": "0123456789abcdef"},
-        )
-        assert accepted.status != 401
+        response = await client.post("/api/run", json={"action": "not-a-command"})
+        assert response.status == 400
+        body = await response.json()
+        assert "unauthorized" not in body.get("error", "")

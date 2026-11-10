@@ -21,7 +21,7 @@ Supported command kinds are `STATUS`, `GROUPS`, `CAMPAIGNS`, `MEDIA_LIST`, `BLAC
 
 ## Local panel
 
-`web.py` listens on `127.0.0.1:8642`. `POST /api/run`, `/api/fanout`, `/api/stop`, and `/api/media/upload` require header `X-Web-Token` matching `WEB_TOKEN` (at least 16 characters). When the token is absent, those writes return HTTP 503.
+`web.py` listens only on `127.0.0.1:8642`. Writes on that panel do not ask for a separate token.
 
 ## Worker result
 

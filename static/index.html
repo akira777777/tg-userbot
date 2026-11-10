@@ -203,9 +203,6 @@
     <label class="field">активный
       <select id="accSel" style="width:140px"></select>
     </label>
-    <label class="field">токен записи
-      <input id="webToken" type="password" autocomplete="off" placeholder="токен записи" style="width:180px">
-    </label>
     <button type="button" class="danger" id="btnStop">Стоп аккаунта</button>
     <button type="button" class="danger" id="btnStopAll">Стоп всем</button>
   </div>
@@ -389,7 +386,6 @@ const $ = id => document.getElementById(id);
 const log = $('log');
 let state = null;
 const ACC_COLORS = {};
-const TOKEN_KEY = 'webToken';
 function accColor(name){
   if (!ACC_COLORS[name]) {
     const h = [...name].reduce((a,c)=>(a*31+c.charCodeAt(0))%360, 7);
@@ -397,12 +393,8 @@ function accColor(name){
   }
   return ACC_COLORS[name];
 }
-function webToken(){ return ($('webToken').value || '').trim(); }
 function authHeaders(json){
-  const headers = json ? {'Content-Type':'application/json'} : {};
-  const token = webToken();
-  if (token) headers['X-Web-Token'] = token;
-  return headers;
+  return json ? {'Content-Type':'application/json'} : {};
 }
 
 function addLog(ev){
@@ -684,9 +676,6 @@ function armSend(checkId, buttonId, liveLabel){
 armSend('bc_dry', 'bc_send', 'Отправить');
 armSend('dm_dry', 'dm_send', 'Отправить DM');
 armSend('cd_dry', 'cd_send', 'Запустить');
-$('webToken').value = sessionStorage.getItem(TOKEN_KEY) || '';
-$('webToken').addEventListener('input', () => sessionStorage.setItem(TOKEN_KEY, webToken()));
-
 let lastSeq = 0, lastBoot = null;
 function connect(){
   const es = new EventSource('/api/stream');
