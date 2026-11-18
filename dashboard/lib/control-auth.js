@@ -54,12 +54,22 @@ export async function createSession(identity) {
   (await cookies()).set(SESSION_COOKIE, `${value}.${sign(value)}`, { httpOnly: true, secure: true, sameSite: "lax", maxAge: SESSION_TTL_SECONDS, path: "/" });
 }
 
-function publicActorId() {
-  const raw = process.env.OWNER_TELEGRAM_IDS?.split(",")[0]?.trim();
-  const id = Number.parseInt(raw ?? "", 10);
-  return Number.isSafeInteger(id) && id > 0 ? id : 1;
+async function verifiedSessionId() {
+  const raw = (await cookies()).get(SESSION_COOKIE)?.value ?? "";
+  const parts = raw.split(".");
+  if (parts.length !== 3) throw new Error("Unauthenticated");
+  const [idText, expiresText, signature] = parts;
+  const value = `${idText}.${expiresText}`;
+  const expected = sign(value);
+  const actualBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(actualBuffer, expectedBuffer)) throw new Error("Unauthenticated");
+  const id = Number.parseInt(idText, 10);
+  const expiresAt = Number.parseInt(expiresText, 10);
+  if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(expiresAt) || expiresAt <= Math.floor(Date.now() / 1000) || !ownerIds().has(id)) throw new Error("Unauthenticated");
+  return id;
 }
 
 export async function requireOwnerSession() {
-  return { id: publicActorId() };
+  return { id: await verifiedSessionId() };
 }
