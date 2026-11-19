@@ -42,7 +42,6 @@ import itertools
 
 import pytest
 
-import web
 
 
 class _FakeStream:
