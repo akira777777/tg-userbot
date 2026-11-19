@@ -11,6 +11,15 @@ import pytest
 from control.slots import SlotLocker
 
 
+def test_sync_acquire_and_release(tmp_path: Path) -> None:
+    locker = SlotLocker(tmp_path)
+    assert locker.try_acquire_sync("main") is True
+    assert locker.try_acquire_sync("main") is False
+    locker.release_sync("main")
+    assert locker.try_acquire_sync("main") is True
+    locker.release_sync("main")
+
+
 def test_release_frees_slot_for_next_command(tmp_path: Path) -> None:
     locker = SlotLocker(tmp_path)
 

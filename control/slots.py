@@ -24,13 +24,7 @@ class SlotLocker:
     async def acquire(self, slot: str) -> bool:
         key = self._safe(slot)
         async with self._gate:
-            if key in self._held:
-                return False
-            handle = self._try_file_lock(key)
-            if handle is None:
-                return False
-            self._held[key] = handle
-            return True
+            return self._acquire_unlocked(key)
 
     async def release(self, slot: str) -> None:
         key = self._safe(slot)
@@ -38,6 +32,24 @@ class SlotLocker:
             handle = self._held.pop(key, None)
         if handle is not None:
             self._unlock_file(handle)
+
+    def try_acquire_sync(self, slot: str) -> bool:
+        """Синхронный захват для CLI bot.py (без asyncio-цикла)."""
+        return self._acquire_unlocked(self._safe(slot))
+
+    def release_sync(self, slot: str) -> None:
+        handle = self._held.pop(self._safe(slot), None)
+        if handle is not None:
+            self._unlock_file(handle)
+
+    def _acquire_unlocked(self, key: str) -> bool:
+        if key in self._held:
+            return False
+        handle = self._try_file_lock(key)
+        if handle is None:
+            return False
+        self._held[key] = handle
+        return True
 
     @staticmethod
     def _safe(slot: str) -> str:

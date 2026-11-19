@@ -151,8 +151,11 @@ def test_conduct_targets_named_account_only():
 
 
 @pytest.mark.asyncio
-async def test_run_command_redacts_output_and_account_name(monkeypatch: pytest.MonkeyPatch):
-    runtime = _runtime()
+async def test_run_command_redacts_output_and_account_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    runtime = _runtime(tmp_path)
+    seen: dict[str, object] = {}
 
     class _Proc:
         returncode = 0
@@ -160,7 +163,8 @@ async def test_run_command_redacts_output_and_account_name(monkeypatch: pytest.M
         async def communicate(self):
             return b"user 1234567890 session work2", b""
 
-    async def fake_exec(*_cmd, **_kwargs):
+    async def fake_exec(*_cmd, **kwargs):
+        seen["env"] = kwargs.get("env")
         return _Proc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
@@ -170,6 +174,8 @@ async def test_run_command_redacts_output_and_account_name(monkeypatch: pytest.M
     assert "work2" not in result["redacted_account"]
     assert "1234567890" not in result["output"]
     assert "<user_id>" in result["output"]
+    assert isinstance(seen["env"], dict)
+    assert seen["env"]["USERBOT_SLOT_HELD"] == "db"
 
 
 def test_shared_cli_slot_keys():

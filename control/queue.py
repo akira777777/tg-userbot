@@ -151,7 +151,29 @@ class QueueRepository:
         ).execute()
 
         rows = (rpc.data if rpc else None) or []
-        return [self._record(row) for row in rows]
+        records: list[CommandRecord] = []
+        for row in rows:
+            try:
+                records.append(self._record(row))
+            except Exception as exc:
+                # Кривой payload не должен ронять весь batch и держать lease.
+                try:
+                    command_id = UUID(str(row["id"]))
+                    self.fail(
+                        command_id,
+                        "invalid_payload",
+                        {"error": "payload rejected", "detail": str(exc)[:200]},
+                    )
+                    self._append_event(
+                        command_id,
+                        int(row.get("version") or 0) + 1,
+                        "error",
+                        "invalid_payload",
+                        f"команда отклонена: {exc}"[:200],
+                    )
+                except Exception:
+                    pass
+        return records
 
     def renew_lease(
         self,

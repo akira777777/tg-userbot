@@ -195,6 +195,58 @@ def test_claim_uses_sql_argument_names_and_nested_payload():
     assert claimed[0].status.value == "CLAIMED"
 
 
+def test_claim_fails_invalid_payload_without_dropping_batch():
+    repo, fake = _repo()
+    good_id = uuid4()
+    bad_id = uuid4()
+    created = datetime.now(UTC).isoformat()
+    bad_row = {
+        "id": str(bad_id),
+        "idempotency_key": str(uuid4()),
+        "owner_telegram_id": 7,
+        "kind": "BROADCAST",
+        "mode": "DRY_RUN",
+        "account": "main",
+        "payload": {"text": 123},
+        "status": "CLAIMED",
+        "created_at": created,
+        "claimed_at": created,
+        "lease_expires_at": created,
+        "version": 1,
+        "claimed_by": "worker-a",
+    }
+    good_row = {
+        "id": str(good_id),
+        "idempotency_key": str(uuid4()),
+        "owner_telegram_id": 7,
+        "kind": "BROADCAST",
+        "mode": "DRY_RUN",
+        "account": "main",
+        "payload": {"text": "ok"},
+        "status": "CLAIMED",
+        "created_at": created,
+        "claimed_at": created,
+        "lease_expires_at": created,
+        "version": 1,
+        "claimed_by": "worker-a",
+    }
+    fake.tables["control_commands"] = [dict(bad_row), dict(good_row)]
+    fake.claim_rows = [bad_row, good_row]
+    claimed = repo.claim_commands("worker-a")
+    assert [item.id for item in claimed] == [good_id]
+    failed = [
+        update
+        for update in fake.updates
+        if update["table"] == "control_commands" and update["body"].get("status") == "FAILED"
+    ]
+    assert failed
+    assert failed[0]["body"]["error_code"] == "invalid_payload"
+    assert any(
+        event.get("event_type") == "invalid_payload"
+        for event in fake.tables["control_command_events"]
+    )
+
+
 def test_complete_and_fail_from_claimed_once():
     repo, fake = _repo()
     done_id = uuid4()
@@ -306,15 +358,24 @@ def test_live_nonce_round_trips_and_missing_nonce_is_rejected():
     assert rejected["ok"] is False
     assert "confirmation_nonce" in rejected["error"]
 
-    fake.claim_rows = [
-        {
-            **stored,
-            "confirmation_nonce": None,
-            "status": "CLAIMED",
-            "version": 1,
-            "claimed_at": created,
-            "lease_expires_at": created,
-        }
+    bad = {
+        **stored,
+        "confirmation_nonce": None,
+        "status": "CLAIMED",
+        "version": 1,
+        "claimed_at": created,
+        "lease_expires_at": created,
+        "claimed_by": "worker-a",
+    }
+    fake.tables["control_commands"] = [dict(bad)]
+    fake.claim_rows = [bad]
+    claimed = repo.claim_commands("worker-a")
+    assert claimed == []
+    failed = [
+        update
+        for update in fake.updates
+        if update["table"] == "control_commands" and update["body"].get("status") == "FAILED"
     ]
-    with pytest.raises(ValueError, match="confirmation_nonce"):
-        repo.claim_commands("worker-a")
+    assert failed
+    assert failed[0]["body"]["error_code"] == "invalid_payload"
+    assert "confirmation_nonce" in (failed[0]["body"].get("result_summary") or {}).get("detail", "")

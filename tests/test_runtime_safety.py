@@ -151,4 +151,5 @@ async def test_panel_job_starts_its_own_session_on_posix(monkeypatch):
     web.BUS.jobs["contract-slot"] = {"name": "status", "kill": False}
     await web.run_job(["status"], "status", "main", "contract-slot")
     assert captured["kwargs"]["start_new_session"] is True
+    assert captured["kwargs"]["env"]["USERBOT_SLOT_HELD"] == "contract-slot"
     assert "contract-slot" not in web.BUS.jobs

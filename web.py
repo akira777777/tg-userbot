@@ -311,7 +311,12 @@ async def run_job(args, label, account, slot, extra_slots=None):
         proc = await asyncio.create_subprocess_exec(
             *cmd, cwd=str(ROOT),
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            env={
+                **os.environ,
+                "PYTHONIOENCODING": "utf-8",
+                # bot.py не пытается взять тот же file-lock повторно.
+                "USERBOT_SLOT_HELD": ",".join(held),
+            },
             **({} if _windows() else {"start_new_session": True}))
         job = BUS.jobs.get(slot)
         if not job or job["name"] != label:  # слот уже перешел другой задаче — не мешаем

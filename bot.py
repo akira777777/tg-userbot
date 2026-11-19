@@ -12,6 +12,7 @@
 для команд status / export / blacklist (они работают только с базой).
 """
 import argparse
+import atexit
 import asyncio
 import collections
 import csv
@@ -43,9 +44,63 @@ SESSION_DIR = Path(os.environ.get("USERBOT_SESSIONS", ROOT / "sessions"))
 MEDIA_DIR = Path(os.environ.get("USERBOT_MEDIA", ROOT / "media_cache"))
 SECRETS_PATH = Path(os.environ.get("USERBOT_SECRETS", ROOT / "account-secrets.json"))
 STOP_PATH = Path(os.environ.get("USERBOT_STOP", ROOT / "control-stop.json"))
+LOCKS_DIR = Path(os.environ.get("USERBOT_LOCKS", ROOT / "locks"))
 ACCOUNTS_RE = re.compile(r"^[a-z0-9_\-]{1,32}$")
 LEGACY_SESSION = os.environ.get("USERBOT_SESSION", str(ROOT / "userbot.session"))
 STOP_RE = re.compile(r"^(stop|opt.?out|unsubscribe|отпиш|отпис|стоп)", re.I)
+
+# Слоты session-файлов: CLI сам берёт lock; панель/воркер передают USERBOT_SLOT_HELD.
+_slot_locker = None
+_covered_slots: set[str] = set()
+_locked_slots: set[str] = set()
+
+
+def _parent_held_slots() -> set[str]:
+    raw = os.environ.get("USERBOT_SLOT_HELD", "").strip()
+    if not raw:
+        return set()
+    if raw == "*":
+        return {"*"}
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
+def hold_account_slot(account: str) -> None:
+    """Не дать двум процессам открыть один и тот же Telethon session-файл."""
+    key = (account or "main").strip().lower()
+    if key in _covered_slots:
+        return
+    parent = _parent_held_slots()
+    if "*" in parent or key in parent:
+        _covered_slots.add(key)
+        return
+    global _slot_locker
+    if _slot_locker is None:
+        from control.slots import SlotLocker
+
+        _slot_locker = SlotLocker(LOCKS_DIR)
+    if not _slot_locker.try_acquire_sync(key):
+        sys.exit(
+            f"Слот «{key}» занят — уже идёт команда панели, воркера или другого CLI."
+        )
+    _covered_slots.add(key)
+    _locked_slots.add(key)
+
+
+def release_account_slots() -> None:
+    if _slot_locker is None:
+        _covered_slots.clear()
+        _locked_slots.clear()
+        return
+    for key in list(_locked_slots):
+        try:
+            _slot_locker.release_sync(key)
+        except OSError:
+            pass
+    _locked_slots.clear()
+    _covered_slots.clear()
+
+
+atexit.register(release_account_slots)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS groups(
@@ -464,6 +519,7 @@ def get_client(account="main", allow_flood=False):
     load_env()
     if not ACCOUNTS_RE.fullmatch(account):
         sys.exit("Некорректное имя аккаунта: a-z, 0-9, _ , - до 32 символов")
+    hold_account_slot(account)
     # Схему мигрирует точка входа процесса, а не фабрика клиента: get_client
     # зовут из cmd_conduct по кругу, пока там висит своя запись в базу.
     conn = connect(migrate_schema=False)

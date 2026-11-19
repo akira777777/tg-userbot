@@ -86,7 +86,7 @@ class UserbotRuntime:
                 if not await self._locker.acquire(slot):
                     return self._fail(account, "busy")
                 acquired.append(slot)
-            return await self._run_locked(record, spec.argv, account)
+            return await self._run_locked(record, spec.argv, account, acquired)
         finally:
             for slot in reversed(acquired):
                 await self._locker.release(slot)
@@ -124,14 +124,26 @@ class UserbotRuntime:
         spec = build_control_cli(kind, payload, account, mode)
         return None if spec is None else spec.argv
 
-    async def _run_locked(self, record: CommandRecord, argv: list[str], account: str) -> dict[str, Any]:
+    async def _run_locked(
+        self,
+        record: CommandRecord,
+        argv: list[str],
+        account: str,
+        held_slots: list[str] | None = None,
+    ) -> dict[str, Any]:
         cmd = [self._python, str(self._root / "bot.py")] + argv
+        env = {
+            **os.environ,
+            # Дочерний bot.py не берёт те же file-lock слоты повторно.
+            "USERBOT_SLOT_HELD": ",".join(held_slots or [account or "main"]),
+        }
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(self._root),
+                env=env,
             )
             self._procs[record.id] = proc
             stdout, stderr = await self._wait_proc(proc)
