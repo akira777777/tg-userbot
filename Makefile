@@ -1,6 +1,7 @@
 .PHONY: help install test lint format run worker controller healthcheck docker-build docker-up docker-down clean
 
 PYTHON ?= python
+PYTEST ?= py -3.15 -m pytest
 SOURCES = bot.py cloud.py web.py control tests scripts
 
 help:
@@ -22,7 +23,7 @@ healthcheck:
 	$(PYTHON) scripts/healthcheck.py --db userbot.db
 
 test:
-	$(PYTHON) -m pytest tests/ --cov=control --cov=bot --cov=cloud --cov-report=term-missing
+	$(PYTEST) tests/ --cov=control --cov=bot --cov=cloud --cov-report=term-missing
 	cd dashboard && npm test -- --run
 
 lint:

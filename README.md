@@ -183,11 +183,13 @@ docker compose up -d
 ## Verification
 
 ```bash
-python -m pytest tests/
+py -3.15 -m pytest tests/
 python -m ruff check .
 python -m py_compile bot.py web.py cloud.py
 cd dashboard && npm ci && npm test -- --run && npm run build
 ```
+
+Тесты: `py -3.15 -m pytest tests/ -q` (у окружения по умолчанию python 3.14 pytest 7.4.3 < minversion 8.3).
 
 `python -m bandit -q -ll -r bot.py cloud.py web.py control scripts` is an optional extra
 security pass.
