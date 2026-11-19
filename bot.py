@@ -158,6 +158,28 @@ def connect(migrate_schema=None):
     return conn
 
 
+def db_call_retry(fn, *, attempts=6, first_delay=0.5, max_delay=8.0, sleep=time.sleep):
+    """Выполнить fn() с повтором, если SQLite занят другим процессом-воркером.
+
+    Несколько процессов `bot.py watch` пишут в одну базу; при долгой чужой
+    write-транзакции ожидание внутри busy_timeout может кончиться
+    'database is locked'. Записи-«стопы» и авторегистрация групп обязаны
+    это переживать. fn() должен быть идемпотентным (OR IGNORE / ON CONFLICT).
+    """
+    delay = first_delay
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            text = str(exc).lower()
+            if "locked" not in text and "busy" not in text:
+                raise
+            if attempt == attempts - 1:
+                raise
+            sleep(delay + random.uniform(0, 0.15))
+            delay = min(delay * 2, max_delay)
+
+
 def _add_column(conn, table, column, ddl):
     cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
     if column not in cols:
