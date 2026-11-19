@@ -573,6 +573,45 @@ def upsert_mailing_group(conn, account, ent):
     return added, can, why
 
 
+def persist_stop_request(conn, user_id, username, *, attempts=8, first_delay=0.5,
+                         max_delay=8.0, sleep=time.sleep):
+    """«стоп» в DM -> blacklist. True = записан, False = база так и не освободилась."""
+    def _write():
+        conn.execute("INSERT OR IGNORE INTO blacklist(user_id,username,reason,ts) "
+                     "VALUES(?,?,?,?)",
+                     (user_id, username or "", "самоотписка в DM", now_iso()))
+        conn.commit()
+    try:
+        db_call_retry(_write, attempts=attempts, first_delay=first_delay,
+                      max_delay=max_delay, sleep=sleep)
+        return True
+    except sqlite3.OperationalError as exc:
+        conn.rollback()   # сброс частичной записи: не держим лок и не даём ей закоммититься позже
+        text = str(exc)
+        kind = "база была занята" if ("locked" in text.lower() or "busy" in text.lower()) else f"ошибка БД: {text}"
+        print(f"[blacklist] {user_id}: не записан ({kind})")
+        return False
+
+
+def persist_group_event(conn, account, chat, *, attempts=6, first_delay=0.5,
+                        max_delay=8.0, sleep=time.sleep):
+    """Авторегистрация группы из on_msg. None = не записали (база занята)."""
+    def _write():
+        fresh = not conn.execute("SELECT 1 FROM groups WHERE id=?", (chat.id,)).fetchone()
+        added, can, why = upsert_mailing_group(conn, account, chat)
+        conn.commit()
+        return fresh, added, can, why
+    try:
+        return db_call_retry(_write, attempts=attempts, first_delay=first_delay,
+                             max_delay=max_delay, sleep=sleep)
+    except sqlite3.OperationalError as exc:
+        conn.rollback()   # сброс частичной записи: не держим лок и не даём ей закоммититься позже
+        text = str(exc)
+        kind = "база была занята" if ("locked" in text.lower() or "busy" in text.lower()) else f"ошибка БД: {text}"
+        print(f"[авто+] группа {chat.id}: не записана ({kind})")
+        return None
+
+
 async def cmd_groups(args):
     conn = connect()
     if args.list:
@@ -680,19 +719,21 @@ async def cmd_watch(args):
                 who = await e.get_sender()
                 if not who or not getattr(who, "id", None):
                     return  # отправитель недоступен (удалённый аккаунт и т.п.)
-                conn.execute("INSERT OR IGNORE INTO blacklist(user_id,username,reason,ts) "
-                             "VALUES(?,?,?,?)",
-                             (who.id, who.username or "", "самоотписка в DM", now_iso()))
-                conn.commit()
-                print(f"[blacklist] {who.id} @{who.username or '-'}: «{txt[:40]}»")
+                if persist_stop_request(conn, who.id, who.username or ""):
+                    print(f"[blacklist] {who.id} @{who.username or '-'}: «{txt[:40]}»")
+                else:
+                    print(f"[blacklist] {who.id}: НЕ ЗАПИСАН — база была занята; "
+                          f"запишется при следующем его сообщении")
                 if not args.noreply:
                     await e.reply("Добавил вас в чёрный список, больше не пишу.")
             return
         chat = await e.get_chat()
         if isinstance(chat, (Chat, Channel)):
-            fresh = not conn.execute("SELECT 1 FROM groups WHERE id=?", (chat.id,)).fetchone()
-            added, can, why = upsert_mailing_group(conn, args.account, chat)
-            conn.commit()
+            res = persist_group_event(conn, args.account, chat)
+            if res is None:
+                print(f"[авто+] группа {chat.id}: не записана — база была занята")
+                return
+            fresh, added, can, why = res
             if fresh:
                 note = "" if can else f", не цель: {REASON_RU.get(why, why)}"
                 print(f"[авто+] группа {chat.id} «{chat.title}» "
