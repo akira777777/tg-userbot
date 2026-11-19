@@ -97,7 +97,7 @@ exclude = ["tests/", "docs/", "scripts/", "build/", "dist/", "dashboard/"]
 [tool.pytest.ini_options]
 minversion = "8.3"
 addopts = "-ra -q --strict-markers"
-testpaths = ["tests"]
+testpaths = ["tests", "src/test"]
 asyncio_mode = "auto"
 filterwarnings = [
     "error",
