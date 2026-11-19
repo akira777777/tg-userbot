@@ -31,11 +31,24 @@ MAX_TEXT_LENGTH: Final = 4000
 MAX_GROUP_IDS: Final = 200
 MAX_DM_LIMIT: Final = 200
 REDACTION_PATTERNS: Final[list[tuple[re.Pattern[str], str]]] = [
-    (re.compile(r"API_ID_\w+\s*=\s*\S+"), "API_ID=***"),
-    (re.compile(r"API_HASH_\w+\s*=\s*\S+"), "API_HASH=***"),
+    (re.compile(r"(?:API_ID(?:_\w+)?)\s*[=:]\s*\S+", re.IGNORECASE), "API_ID=***"),
+    (re.compile(r"(?:API_HASH(?:_\w+)?)\s*[=:]\s*\S+", re.IGNORECASE), "API_HASH=***"),
+    (
+        re.compile(
+            r"(?:BOT_TOKEN|CONTROL_SESSION_SECRET|SUPABASE_(?:SECRET|SERVICE_ROLE)_KEY)\s*[=:]\s*\S+",
+            re.IGNORECASE,
+        ),
+        "<secret>=***",
+    ),
+    (re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b"), "<bot_token>"),
     (re.compile(r"sb_secret_\S+"), "sb_secret=***"),
+    (
+        re.compile(
+            r"(?:[A-Za-z]:)?(?:[\\/]?[^\\/\s'\"`]+[\\/])*[A-Za-z0-9_.\-]+\.session(?:-journal|-wal|-shm|\.unauth)?\b"
+        ),
+        "<session_file>",
+    ),
     (re.compile(r"\b\d{9,15}\b"), "<user_id>"),
-    (re.compile(r"/[A-Za-z0-9_\-/]+\.session\b"), "<session_file>"),
     (re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b"), "<token>"),
 ]
 
@@ -44,11 +57,13 @@ class Redactor:
     """Удаляет секреты, пути сессий, длинные user_id из текста перед записью в логи/UI."""
 
     @classmethod
-    def redact(cls, text: str) -> str:
+    def redact(cls, text: str, *, max_len: int | None = 2000, keep_tail: bool = False) -> str:
         result = text
         for pattern, replacement in REDACTION_PATTERNS:
             result = pattern.sub(replacement, result)
-        return result[:2000]
+        if max_len is None or len(result) <= max_len:
+            return result
+        return result[-max_len:] if keep_tail else result[:max_len]
 
     @classmethod
     def redact_account_name(cls, internal_name: str) -> str:

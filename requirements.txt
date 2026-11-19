@@ -1,3 +1,6 @@
+# Runtime-зеркало pyproject.toml. Источник правды — pyproject.toml:
+#   python -m pip install -e ".[dev]"
+# Этот файл — для окружений, где editable-install недоступен.
 telethon>=1.36
 aiohttp>=3.9
 python-telegram-bot>=21.0

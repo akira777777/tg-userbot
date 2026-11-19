@@ -1,0 +1,147 @@
+{
+  "generated_at": "2026-11-18T23:41:08.932Z",
+  "project": "tg-userbot/dashboard",
+  "tasks": [
+    {
+      "id": "DASH-601",
+      "title": "Сессия Mini App: переоткрытие при истечении cookie",
+      "status": "done",
+      "area": "frontend/auth",
+      "priority": "P0",
+      "estimate": "M",
+      "depends": [],
+      "why": "app/api/control/session/route.js существует, но клиент его не вызывает. Через 30 минут cookie протухает — панель показывает «Необходим вход через Telegram» и умирает до перезапуска.",
+      "how": "lib/control-client.js: controlFetch при 401 пересоздаёт сессию через /api/control/session и повторяет запрос один раз.",
+      "accept": [
+        "После 30+ минут панель молча продлевает сессию",
+        "При отказе в доступе пользователь видит понятное сообщение, а не белый экран",
+        "Тест на 401 → refresh → retry"
+      ]
+    },
+    {
+      "id": "DASH-602",
+      "title": "Серверные тесты маршрутов /api/control/*",
+      "status": "done",
+      "area": "backend/tests",
+      "priority": "P0",
+      "estimate": "M",
+      "depends": [],
+      "why": "Сейчас покрыты только payloadFor и HMAC. Сами роуты (enqueue, консент nonce, отмена) не тестируются, а UI уже от них зависит.",
+      "how": "src/__tests__/control-api-routes.test.js: route-хендлеры вызываются напрямую с Request; Supabase замокан через fetch-стаб.",
+      "accept": [
+        "401 без сессии, 400 на неверный kind/mode",
+        "LIVE без nonce отклоняется",
+        "Повторный idempotency_key возвращает idempotent: true"
+      ]
+    },
+    {
+      "id": "DASH-603",
+      "title": "Псевдонимы аккаунтов на сервере",
+      "status": "done",
+      "area": "fullstack/privacy",
+      "priority": "P1",
+      "estimate": "S",
+      "depends": [
+        "DASH-602"
+      ],
+      "why": "control/policy.py::Redactor.redact_account_name выдаёт «Аккаунт N», но bootstrap и /api/control/commands отдавали сырое name (main, work2).",
+      "how": "lib/account-aliases.js: детерминированная карта key/display_name; bootstrap отдаёт account_aliases, маршруты транслируют key -> внутреннее имя, команды отдаются с account_display.",
+      "accept": [
+        "В сетевой панели браузера нет main/work2",
+        "Выбор аккаунта в форме работает по key",
+        "Плановый тест на отсутствие внутренних имён в ответе"
+      ]
+    },
+    {
+      "id": "DASH-604",
+      "title": "Согласовать ярлык «Кампания Claude»",
+      "status": "done",
+      "area": "product",
+      "priority": "P1",
+      "estimate": "XS",
+      "depends": [],
+      "why": "Название сценария взято из docs/plan/mini-app-control-plane.md, похоже на артефакт автоперевода.",
+      "how": "Выбран финальный текст «Провести кампанию» в lib/command-scenarios.js; тест запрещает упоминания Claude.",
+      "accept": [
+        "Текст согласован и один для формы и подтверждения"
+      ]
+    },
+    {
+      "id": "DASH-605",
+      "title": "Сквозной smoke-тест Mini App",
+      "status": "pending",
+      "area": "qa",
+      "priority": "P1",
+      "estimate": "M",
+      "depends": [
+        "DASH-601"
+      ],
+      "why": "Проверка шла руками через Playwright с моками. Регрессии в confirm-флоу ловятся только глазами.",
+      "how": "Playwright: mock initData → сессия → dry-run WARN/BROADCAST → терминальный статус; LIVE не запускать в CI.",
+      "accept": [
+        "Тест идёт в CI",
+        "Покрывает: сценарии, валидацию, подтверждение, отмену"
+      ]
+    },
+    {
+      "id": "DASH-606",
+      "title": "Сборка команд управления в playwright-скрипте",
+      "status": "pending",
+      "area": "devx",
+      "priority": "P2",
+      "estimate": "XS",
+      "depends": [],
+      "why": "Моки bootstrap/commands сейчас живут в черновике проверки, а не в репозитории.",
+      "how": "Вынести в dashboard/e2e/fixtures и переиспользовать в DASH-605.",
+      "accept": [
+        "Фикстуры один файл, импортируются тестом и ручной проверкой"
+      ]
+    },
+    {
+      "id": "DASH-607",
+      "title": "Веб-консоль воркера: состояние онлайна",
+      "status": "done",
+      "area": "frontend",
+      "priority": "P2",
+      "estimate": "M",
+      "depends": [],
+      "why": "Панель не говорит, жив ли воркер: команды висят в PENDING и пользователь не понимает, что происходит.",
+      "how": "tb_worker_heartbeat + QueueRepository.heartbeat в тике воркера; bootstrap отдаёт worker {last_heartbeat_at, online, stale_seconds}; бейдж в шапке через lib/worker-status.js.",
+      "accept": [
+        "Офлайн-воркер виден на первом экране",
+        "Порог — настраиваемый (WORKER_STALE_SECONDS), по умолчанию 2 интервала lease"
+      ]
+    },
+    {
+      "id": "DASH-608",
+      "title": "Формат плана генерации контента в планировщике",
+      "status": "pending",
+      "area": "planner",
+      "priority": "P2",
+      "estimate": "M",
+      "depends": [],
+      "why": "Кампании нужно планировать до запуска: расписание, черновики, согласование. Формат пока не определён.",
+      "how": "JSON Schema campaign_plan: id, account_key, kind, targets, text, schedule{rrule}, approval. Валидация на сервере до постановки в очередь.",
+      "accept": [
+        "План читается/пишется из planner",
+        "Невалидный план отклоняется до очереди",
+        "Ссылка «Выполнить план» открывает панель с предзаполненной формой"
+      ]
+    },
+    {
+      "id": "DASH-609",
+      "title": "Полировка: анимации переходов и скелетоны",
+      "status": "in_progress",
+      "area": "frontend/ui",
+      "priority": "P3",
+      "estimate": "S",
+      "depends": [],
+      "why": "Основные состояния уже есть; остались мелкие переходы и проверка в Telegram WebView.",
+      "how": "reduce-motion учтён. Осталось: проверить safe-area на iOS в WebView и длительность анимаций шита.",
+      "accept": [
+        "Нет скачков при смене сценария",
+        "Проверено на iOS-эмуляторе"
+      ]
+    }
+  ]
+}

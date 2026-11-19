@@ -23,7 +23,12 @@ export function readBrowserInitData() {
 
 export async function waitForTelegramInitData(timeoutMs = 5000) {
   const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
+  // Если Telegram WebApp API присутствует — ждём полный timeoutMs,
+  // иначе даём короткое окно (250 мс) на загрузку скрипта и сразу сообщаем об ошибке.
+  const hasTelegramContext = () =>
+    Boolean(window.Telegram?.WebApp) || /tgWebAppData=/.test(`${window.location.hash}${window.location.search}`);
+  const effectiveTimeout = hasTelegramContext() ? timeoutMs : Math.min(timeoutMs, 250);
+  while (Date.now() - started < effectiveTimeout) {
     window.Telegram?.WebApp?.ready?.();
     const initData = readBrowserInitData();
     if (initData) {

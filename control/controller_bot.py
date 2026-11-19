@@ -17,17 +17,31 @@ def make_web_app_keyboard(mini_app_url: str) -> ReplyKeyboardMarkup:
     )
 
 
+def _is_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = update.effective_user
+    owner_ids = context.bot_data.get("owner_ids") or frozenset()
+    return bool(user and user.id in owner_ids)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_message:
-        await update.effective_message.reply_text(
-            "Панель управления готова. Открой её кнопкой ниже или по прямой ссылке.",
-            reply_markup=make_web_app_keyboard(context.bot_data["mini_app_url"]),
-        )
+    if not update.effective_message:
+        return
+    if not _is_owner(update, context):
+        await update.effective_message.reply_text("Доступ запрещён.")
+        return
+    await update.effective_message.reply_text(
+        "Панель управления готова. Открой её кнопкой ниже или по прямой ссылке.",
+        reply_markup=make_web_app_keyboard(context.bot_data["mini_app_url"]),
+    )
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_message:
-        await update.effective_message.reply_text("Контроллер запущен. Открой панель через /start.")
+    if not update.effective_message:
+        return
+    if not _is_owner(update, context):
+        await update.effective_message.reply_text("Доступ запрещён.")
+        return
+    await update.effective_message.reply_text("Контроллер запущен. Открой панель через /start.")
 
 
 def build_application(settings: ControlSettings) -> Application[Any, Any, Any, Any, Any, Any]:

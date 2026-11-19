@@ -77,20 +77,30 @@ def build_web_args(p: dict) -> tuple[list[str], str, str]:
     return _web_argv(p, action, account, slot, tail)
 
 
+def _opt(flag: str, value: str) -> list[str]:
+    """Безопасная передача строкового значения флага: значения на '-' передаются через '='."""
+    if value.startswith("-"):
+        return [f"{flag}={value}"]
+    return [flag, value]
+
+
 def _control_argv(kind: CommandKind, data: dict, account: str, mode: CommandMode) -> list[str] | None:
     if kind == CommandKind.STATUS:
         return ["status"]
     if kind == CommandKind.GROUPS:
         return ["groups", "--list", "--account", account]
     if kind == CommandKind.CAMPAIGNS:
-        return ["status"]
+        return ["report"]
     if kind == CommandKind.MEDIA_LIST:
         return ["media", "list", "--account", account]
     if kind == CommandKind.BLACKLIST_ADD:
         value = str(data.get("value") or "").strip()
         if not value:
             return None
-        return ["blacklist", "add", value, "--reason", str(data.get("reason") or "вручную")]
+        reason = str(data.get("reason") or "вручную")
+        if value.startswith("-"):
+            return ["blacklist", "add", *_opt("--reason", reason), "--", value]
+        return ["blacklist", "add", value, *_opt("--reason", reason)]
     if kind == CommandKind.STOP:
         args = ["stop"]
         target = data.get("account") or account
@@ -132,7 +142,7 @@ def _control_argv(kind: CommandKind, data: dict, account: str, mode: CommandMode
 
 def _append_delivery_args(args: list[str], data: dict) -> None:
     if data.get("text"):
-        args += ["--text", str(data["text"])]
+        args += _opt("--text", str(data["text"]))
     if data.get("media_id"):
         args += ["--media", str(data["media_id"])]
     if data.get("group_ids"):
@@ -267,10 +277,8 @@ def _web_blacklist(p: dict) -> list[str]:
     v = str(p.get("value", "")).strip()
     if not BLACKLIST_RE.fullmatch(v):
         raise ValueError("blacklist: только @ник (A-Za-z0-9_) или числовой id")
-    reason = str(p.get("reason", "web")).strip()[:64]
-    if reason.startswith("-"):
-        reason = " " + reason
-    return ["blacklist", "add", v, "--reason", reason or "web"]
+    reason = str(p.get("reason", "web")).strip()[:64] or "web"
+    return ["blacklist", "add", v, *_opt("--reason", reason)]
 
 
 def _web_delivery(p: dict, action: str, tail: list[str], slot: str, account: str) -> tuple[list[str], str, str]:
@@ -280,7 +288,7 @@ def _web_delivery(p: dict, action: str, tail: list[str], slot: str, account: str
         raise ValueError("нужен текст или медиа (или и то, и другое)")
     args = [action]
     if text:
-        args += ["--text", text]
+        args += _opt("--text", text)
     if mid.isdigit():
         args += ["--media", mid]
     if p.get("dry"):
@@ -313,16 +321,16 @@ def _web_conduct(p: dict) -> tuple[list[str], str, str]:
         raise ValueError("нужен текст или медиа (или и то, и другое)")
     args = ["conduct", "--what", kind]
     if text:
-        args += ["--text", text]
+        args += _opt("--text", text)
     if mid.isdigit():
         args += ["--media", mid]
     if p.get("dry"):
         args.append("--dry-run")
     if p.get("limit"):
         args += ["--limit", str(int(p["limit"]))]
-    if kind == "dm" and p.get("group"):
+    if kind in ("dm", "both") and p.get("group"):
         args += ["--group", str(int(p["group"]))]
-    if kind == "broadcast" and p.get("ids"):
+    if kind in ("broadcast", "both") and p.get("ids"):
         args += ["--ids"] + [str(int(i)) for i in p["ids"][:200]]
     if p.get("repeat_ok"):
         args.append("--repeat-ok")

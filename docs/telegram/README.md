@@ -1,234 +1,123 @@
 # Telegram-интеграция
 
-> Документация по интеграции tg-userbot с Telegram.
+Проект использует Telegram на трёх уровнях, и их нельзя путать.
 
-## Архитектура
+| Уровень | Библиотека | Кто работает | Что хранит |
+| --- | --- | --- | --- |
+| Userbot (MTProto) | Telethon | `bot.py` на доверенной машине | `sessions/<account>.session`, `userbot.db` |
+| Bot API контроллер | `python-telegram-bot` | `python -m control main telegram-bot` | только `BOT_TOKEN` из окружения |
+| Mini App (браузер) | Next.js | `dashboard/` на HTTPS | подписанная сессионная cookie |
 
-```
-telegram/
-├── client.py       # Telegram Bot API
-├── handlers/       # обработчики команд
-│   ├── messages.py # обработка сообщений
-│   └── media.py    # обработка медиа
-├── filters/        # фильтры
-└── middlewares/    # middleware
-```
+## Userbot: Telethon
 
-## Установка
+- Один аккаунт = один `*.session` файл; один файл нельзя привязать к двум аккаунтам
+  (`bot.py accounts import` это проверяет).
+- `access_hash` привязан к аккаунту: нельзя переиспользовать peer из другого аккаунта.
+  Поэтому DM адресуются `@username`, а если его нет — числовым id из кэша сессии.
+- `FloodWaitError` переводит аккаунт в cooldown (`flood_until` в `accounts`);
+  `flood_guard` не даёт запустить команду раньше срока.
+- `privacy` ставит «Nobody» по максимуму ключей (номер, last seen, фото, пересылка,
+  добавление в чаты, звонки, P2P, голосовые) и перечитывает настройки обратно.
+- `groups --probe` проверяет право записи для пары аккаунт×группа; `conduct` выбирает
+  аккаунт, у которого это право есть.
 
-```bash
-pip install tg-userbot[telegram]
-```
+### Лимиты, которые заложены в код
 
-## Базовый пример
+| Механизм | Значение |
+| --- | --- |
+| Суточный бюджет DM | потолок контингента × `accounts ... budget N` (см. ниже) |
+| Потолок по возрасту аккаунта | fresh 15, warm 30, mature 60, unknown 20 в сутки |
+| Суточный бюджет broadcast | `accounts ... bbudget N` (0–500, по умолчанию 15) |
+| Пауза между DM | 20–45 с (`--delay-min/--delay-max`) |
+| Дедуп DM | `sent` по всем аккаунтам; `--repeat-ok` снимает запрет |
+| Дедуп broadcast | 24 часа по всем аккаунтам; `--repeat-ok` снимает запрет |
+| Окно кампании `conduct` | `--window` часов (по умолчанию 6) |
 
-```python
-from tg_userbot.telegram.client import TelegramClient
+### Режим пересылки (`--from-source`)
 
-async def main():
-    bot = TelegramClient(
-        token="123456:ABC...XYZ",
-        bot_id=123456789,
-    )
-
-    await bot.run()
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
-```
-
-## Команды
-
-### `/media`
-
-```python
-from tg_userbot.telegram.handlers import MediaHandler
-
-media_handler = MediaHandler(
-    library=media_library,  # MediaLibrary
-)
-
-bot.add_handler(media_handler)
-```
-
-### `/search`
-
-```python
-from tg_userbot.telegram.handlers import SearchHandler
-
-search_handler = SearchHandler(
-    library=media_library,
-    search_engine=media_library.search,
-)
-
-bot.add_handler(search_handler)
-```
-
-### `/upload`
-
-```python
-from tg_userbot.telegram.handlers import UploadHandler
-
-upload_handler = UploadHandler(
-    library=media_library,
-    storage=local_storage,
-)
-
-bot.add_handler(upload_handler)
-```
-
-## Фильтры
-
-### По категориям
-
-```python
-from tg_userbot.telegram.filters import CategoryFilter
-
-category_filter = CategoryFilter(
-    categories=["music", "video", "audio"],
-)
-
-bot.add_filter(category_filter)
-```
-
-### По тегам
-
-```python
-from tg_userbot.telegram.filters import TagFilter
-
-tag_filter = TagFilter(
-    tags=["lofi", "beats", "study"],
-)
-
-bot.add_filter(tag_filter)
-```
-
-### По диапазонам
-
-```python
-from tg_userbot.telegram.filters import RangeFilter
-
-range_filter = RangeFilter(
-    min_duration=60,
-    max_duration=300,
-)
-
-bot.add_filter(range_filter)
-```
-
-## Middleware
-
-### Логирование
-
-```python
-from tg_userbot.telegram.middlewares import LoggingMiddleware
-
-logging_middleware = LoggingMiddleware(
-    logger=logger,
-    level="INFO",
-)
-
-bot.add_middleware(logging_middleware)
-```
-
-### Rate limiting
-
-```python
-from tg_userbot.telegram.middlewares import RateLimitMiddleware
-
-rate_limit_middleware = RateLimitMiddleware(
-    rate=1.0,  # 1 запрос в секунду
-    burst=10,
-)
-
-bot.add_middleware(rate_limit_middleware)
-```
-
-### Аутентификация
-
-```python
-from tg_userbot.telegram.middlewares import AuthMiddleware
-
-auth_middleware = AuthMiddleware(
-    users=[123456, 789012],  # список user_id
-)
-
-bot.add_middleware(auth_middleware)
-```
-
-## Обработка ошибок
-
-```python
-from tg_userbot.telegram.exceptions import (
-    MediaNotFoundError,
-    UploadError,
-    SearchError,
-)
-
-from tg_userbot.telegram.handlers import ErrorHandler
-
-error_handler = ErrorHandler(
-    on_media_not_found=lambda: send_message("Медиа не найдено"),
-    on_upload_error=lambda e: send_message(f"Ошибка загрузки: {e}"),
-    on_search_error=lambda e: send_message(f"Ошибка поиска: {e}"),
-)
-
-bot.add_handler(error_handler)
-```
-
-## Тесты
+`broadcast` и `dmsend` умеют вместо `--text` пересылать готовые сообщения из
+закрытого канала-источника. Сообщения живут в канале, а не в аккаунте; наружу
+уходит `forward` от расходного аккаунта.
 
 ```bash
-pytest tests/test_telegram/ -v --cov=tg_userbot/telegram
+bot.py broadcast --from-source @secret_ads --msg-id 12 --dry-run
+bot.py broadcast --from-source @secret_ads --msg-id 12
+bot.py dmsend --from-source @secret_ads --msg-id 12 --limit 10
 ```
 
-## FAQ
+`conduct` / `conduct both` принимают те же флаги: источник резолвится
+для каждого аккаунта отдельно (закрытый канал виден только участникам),
+а бюджеты, паузы и `PEER_FLOOD` остаются за дирижёром.
 
-### Вопрос 1: Как добавить поддержку нескольких ботов?
+- `--forward-from raw` (по умолчанию) — `drop_author=True`: в чате не видно
+  исходного канала; `--forward-from self` / `--keep-author` — со своим заголовком.
+- `--no-preview` — отключить предпросмотр ссылок в текстовой рассылке.
+- Журнал `sent`/`campaigns`, кросс-дедуп, дневные бюджеты и обработка
+  `PEER_FLOOD`/`FloodWait` работают так же, как при обычной отправке.
 
-```python
-from tg_userbot.telegram.client import MultiBotClient
+Это **не** делает автора недостижимым для модерации: жалоба несёт контекст,
+а `messageFwdHeader` хранит `from_id` оригинала. Пересылка снижает заметность
+и позволяет править/удалять пост после рассылки — подробности и проверенные
+ссылки в [`limits-and-antispam.md`](limits-and-antispam.md#10-режим-пересылки-и-его-реальный-потолок).
 
-client = MultiBotClient(
-    bots=[
-        TelegramClient(token="token1", bot_id=123),
-        TelegramClient(token="token2", bot_id=456),
-    ],
-)
+### Анти-спам политика
+
+Все числа и обоснование — в [`limits-and-antispam.md`](limits-and-antispam.md).
+
+- **Два наказания — две реакции.** `FloodWait` — технический rate limit: пауза
+  ровно `seconds` + 15% jitter, цель остаётся тому же аккаунту. `PEER_FLOOD`
+  — спам-ограничение аккаунта: 24 ч × 2^n (потолок 30 дней), цель не
+  передаётся другим аккаунтам.
+- **Страйки.** `accounts.spam_strikes` считает `PEER_FLOOD`; каждая пауза
+  пишется в `accounts.flood_until`, последнее событие — в `last_peerflood_at`.
+  Ограниченный аккаунт (`spam_strikes > 0`) не шлёт DM, пока идёт пауза, даже
+  если общий cooldown уже истёк.
+- **Контингент по возрасту.** `accounts.registered_at` берётся из Telegram
+  (`User.bot_registered`) при `login`, `conduct` и `conduct both`.
+  `account_cohort` делит аккаунты на `fresh` (< 14 дн), `warm` (< 90 дн),
+  `mature`, `unknown`. Явный `cohort` в базе переопределяет расчёт.
+- **Бюджет = минимум.** Дневной DM-потолок — `cohort_budget`: явный бюджет
+  аккаунта не поднимает его выше потолка контингента (0 = лимита нет, ручное
+  решение, но чревато баном).
+- **Наблюдаемость.** `status` и `accounts list` печатают строку «риск»:
+  контингент, возраст, число `PEER_FLOOD`.
+
+Целостность одного аккаунта: одна основная MTProto-сессия на аккаунт —
+параллельная вторая сессия даёт `AUTH_KEY_DUPLICATED` и убивает авторизацию.
+Не запускайте два `conduct` или два воркера на одни аккаунты.
+
+## Bot API контроллер
+
+```bash
+python -m control main telegram-bot
 ```
 
-### Вопрос 2: Как реализовать Webhook-режим?
+После `/start` владелец получает кнопку Web App с `MINI_APP_URL`. Токен и allowlist
+(`OWNER_TELEGRAM_IDS`) остаются только на доверенной машине; контроллер работает через
+long polling, публичный webhook и туннель не нужны.
 
-```python
-from tg_userbot.telegram.client import WebhookClient
+## Mini App: идентичность и команды
 
-client = WebhookClient(
-    token="123456:ABC...XYZ",
-    webhook_url="https://your-domain.com/webhook",
-)
-```
+1. Браузер открывает Mini App и присылает `Telegram.WebApp.initData`.
+2. `POST /api/control/session` проверяет HMAC по токену бота, срок и allowlist,
+   затем выдаёт HTTP-only подписанную cookie.
+3. Команда проходит политику: read / dry-run / live, для live нужен одноразовый
+   confirmation nonce.
+4. `GET /api/control/bootstrap` отдаёт владельцу только безопасный снимок.
+5. Локальный воркер забирает команду из Supabase по lease, проверяет её повторно и
+   запускает `bot.py` через allowlisted адаптер.
 
-### Вопрос 3: Как масштабировать бота?
+Подробности контракта — [`../api/README.md`](../api/README.md), границы доверия —
+[`../architecture/ARCHITECTURE.md`](../architecture/ARCHITECTURE.md).
 
-Используй Docker Compose с автоскейлингом:
+## Чего контроллер не делает
 
-```yaml
-telegram-webhook:
-  image: python:3.12-slim-bookworm
-  deploy:
-    replicas: 2
-  volumes:
-    - ./src:/app/src:ro
-```
+- Не отдаёт наружу сессии, `API_HASH`, service-role ключ и полные получатели.
+- Не принимает произвольные CLI-флаги из браузера — только типизированные команды.
+- Не запускает live-команду без явного подтверждения и не повторяет nonce.
 
-## Вклад в развитие
+## Риски
 
-1. Fork репозиторий
-2. Создай ветку (`git checkout -b feature/amazing-feature`)
-3. Запуш (`git push origin feature/amazing-feature`)
-4. Открой PR
-
-## Лицензия
-
-MIT © Novra
+Автоматизация личных сообщений и массовые рассылки нарушают правила Telegram и могут
+привести к ограничению или блокировке аккаунта. Используйте dry-run, малые бюджеты,
+паузы и `watch` для обработки отписок.

@@ -122,6 +122,19 @@ class StopPayload(BaseModel):
     account: str | Literal["all"] | None = None
 
 
+_PAYLOAD_MODEL_BY_KIND: dict[CommandKind, type[BaseModel]] = {
+    CommandKind.STATUS: ReadPayload,
+    CommandKind.GROUPS: ReadPayload,
+    CommandKind.CAMPAIGNS: ReadPayload,
+    CommandKind.MEDIA_LIST: ReadPayload,
+    CommandKind.BLACKLIST_ADD: BlacklistAddPayload,
+    CommandKind.STOP: StopPayload,
+    CommandKind.BROADCAST: BroadcastPayload,
+    CommandKind.DMSEND: DmSendPayload,
+    CommandKind.CONDUCT: ConductPayload,
+}
+
+
 class CommandPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -132,8 +145,35 @@ class CommandPayload(BaseModel):
     idempotency_key: UUID = Field(default_factory=uuid4)
     confirmation_nonce: UUID | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_payload_for_kind(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        raw_kind = data.get("kind")
+        if raw_kind is None:
+            return data
+        try:
+            kind = raw_kind if isinstance(raw_kind, CommandKind) else CommandKind(raw_kind)
+        except ValueError:
+            return data
+        expected = _PAYLOAD_MODEL_BY_KIND[kind]
+        raw_payload = data.get("payload")
+        if isinstance(raw_payload, expected):
+            return data
+        if isinstance(raw_payload, BaseModel):
+            raise ValueError(f"payload типа {type(raw_payload).__name__} не подходит для команды {kind.value}")
+        if isinstance(raw_payload, dict):
+            updated = dict(data)
+            updated["payload"] = expected.model_validate(raw_payload)
+            return updated
+        return data
+
     @model_validator(mode="after")
     def _confirmation_required_for_live(self) -> CommandPayload:
+        expected = _PAYLOAD_MODEL_BY_KIND[self.kind]
+        if not isinstance(self.payload, expected):
+            raise ValueError(f"payload типа {type(self.payload).__name__} не подходит для команды {self.kind.value}")
         if (
             self.mode == CommandMode.LIVE
             and self.kind

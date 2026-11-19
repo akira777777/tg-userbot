@@ -1,7 +1,7 @@
 .PHONY: help install test lint format run worker controller healthcheck docker-build docker-up docker-down clean
 
 PYTHON ?= python
-SOURCES = bot.py cloud.py web.py control tests scripts/healthcheck.py
+SOURCES = bot.py cloud.py web.py control tests scripts
 
 help:
 	@echo "tg-userbot targets: install test lint format run worker controller healthcheck docker-build docker-up docker-down"
@@ -22,12 +22,12 @@ healthcheck:
 	$(PYTHON) scripts/healthcheck.py --db userbot.db
 
 test:
-	$(PYTHON) -m pytest tests/
+	$(PYTHON) -m pytest tests/ --cov=control --cov=bot --cov=cloud --cov-report=term-missing
 	cd dashboard && npm test -- --run
 
 lint:
-	$(PYTHON) -m ruff check $(SOURCES)
-	$(PYTHON) -m bandit -q -ll -r bot.py cloud.py web.py control scripts/healthcheck.py
+	$(PYTHON) -m ruff check .
+	$(PYTHON) -m bandit -q -ll -r bot.py cloud.py web.py control scripts
 
 format:
 	$(PYTHON) -m black $(SOURCES)
@@ -43,4 +43,4 @@ docker-down:
 	docker compose down
 
 clean:
-	rm -rf dist build htmlcov .coverage .pytest_cache .ruff_cache *.egg-info
+	$(PYTHON) -c "import shutil; [shutil.rmtree(p, ignore_errors=True) for p in ('dist','build','htmlcov','.pytest_cache','.ruff_cache')]; import glob, os; [os.remove(f) for f in glob.glob('*.egg-info') + ['.coverage'] if os.path.exists(f)]"

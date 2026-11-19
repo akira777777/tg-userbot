@@ -1,273 +1,57 @@
-# tg-userbot — Документация
+# Документация tg-userbot
 
-> Telegram Userbot с медиа-библиотекой, поддержкой нескольких платформ и React-панелью.
+Инструмент для **личного аккаунта Telegram**: сбор участников групп, рассылки, личные
+сообщения, оркестр из нескольких аккаунтов и контрольная плоскость Telegram Mini App.
+Точка входа — [`../README.md`](../README.md); полный справочник команд —
+[`../РУКОВОДСТВО.md`](../РУКОВОДСТВО.md).
 
-## 📑 Содержание
+## С чего начать
 
-- [Введение](#введение)
-- [Аーキтектура](#архітектура)
-- [Установка](#установка)
-- [Запуск](#запуск)
-- [API](#api)
-- [Dashboard](#dashboard)
-- [Медиа-библиотека](#медиа-библиотека)
-- [Telegram-интеграция](#telegram-интеграция)
-- [Contributing](#contributing)
-- [Лицензия](#лицензия)
+1. Установка и первый запуск — [`GUIDE.md`](GUIDE.md).
+2. Полный справочник команд и сценариев — [`../РУКОВОДСТВО.md`](../РУКОВОДСТВО.md).
+3. Как устроена система и где проходят границы доверия —
+   [`architecture/ARCHITECTURE.md`](architecture/ARCHITECTURE.md).
 
----
+## Карта документов
 
-## Введение
+| Документ | О чём |
+| --- | --- |
+| [`GUIDE.md`](GUIDE.md) | Короткий операторский путь: установка, вход, первые dry-run. |
+| [`../РУКОВОДСТВО.md`](../РУКОВОДСТВО.md) | Полный справочник CLI, сценарии, БД, ограничения Telegram, траблшутинг. |
+| [`architecture/ARCHITECTURE.md`](architecture/ARCHITECTURE.md) | Runtime-модель, ответственность модулей, границы доверия, конкурентность, деплой. |
+| [`api/README.md`](api/README.md) | Маршруты Mini App, контракт команд, воркер, локальная панель. |
+| [`media/README.md`](media/README.md) | Медиа-библиотека поверх «Избранного»: `bot.py media`, кэш, веб-плеер. |
+| [`telegram/README.md`](telegram/README.md) | Telethon-сессии, Bot API контроллер, `initData`, лимиты и риски. |
+| [`plan/mini-app-control-plane.md`](plan/mini-app-control-plane.md) | Проектные решения Mini App и что ещё не сделано. |
+| [`contributing/CONTRIBUTING.md`](contributing/CONTRIBUTING.md) | Локальные проверки, стиль, правила PR. |
+| [`notes/endless-conduct.md`](notes/endless-conduct.md) | Заметка о режиме «бесконечной» кампании без лимита времени. |
 
-`tg-userbot` — это Telegram Userbot, который предоставляет:
+## Что где лежит
 
-- **Медиа-библиотеку** — хранение, поиск и каталогизация медиа-файлов
-- **Мультиплатформенную поддержку** — Telegram, VK, Twitter (X)
-- **HTTP API** — RESTful API для интеграции с внешними системами
-- **React-дашборд** — веб-интерфейс для управления медиа-библиотекой
-
-## Архитектура
-
-```
-tg-userbot/
-├── src/
-│   ├── app/          # конфигурация, логирование, middleware
-│   ├── handlers/     # обработчики команд
-│   ├── media/        # медиа-библиотека
-│   ├── database/     # интеграция с Supabase
-│   ├── telegram/     # клиенты (Telegram, VK, Twitter)
-│   └── api/          # HTTP API (FastAPI)
-├── dashboard/        # React-панель
-├── tests/            # тесты
-├── scripts/          # утилиты (миграция, бэкапы)
-└── docker-compose.yml
+```text
+bot.py              userbot CLI (Telethon, SQLite)
+cloud.py            зеркало в Supabase
+web.py              локальная панель 127.0.0.1:8642
+control/            Mini App: модели, политика, очередь, воркер, исполнитель, бот-контроллер
+dashboard/          Next.js Mini App (деплой отдельно)
+supabase/schema.sql зеркало + очередь команд + RLS
+scripts/            healthcheck, backup, миграции, ручные утилиты
+scripts/manual/     живые smoke-скрипты (нужна запущенная панель)
+tests/              pytest без сети и без боевых файлов
+docs/               эта документация
 ```
 
-## Установка
+## Чего в проекте нет
 
-### Требования
+В репозитории **нет** FastAPI-сервиса, Redis-кеша и отдельной PostgreSQL-базы
+приложения. Источник правды — локальный SQLite и файлы сессий Telethon; Supabase —
+уменьшенное зеркало и транспорт команд. Если в каком-то документе написано иначе,
+документ устарел.
 
-- Python 3.12+
-- PostgreSQL 16
-- Redis 7
-- Node.js 18+ (для dashboard)
-
-### Пошагово
+## Проверки
 
 ```bash
-# 1. Клонируем репозиторий
-git clone https://github.com/novra/tg-userbot.git
-cd tg-userbot
-
-# 2. Создаём виртуальное окружение
-python -m venv .venv
-source .venv/bin/activate  # или .venv\Scripts\activate на Windows
-
-# 3. Устанавливаем зависимости
-pip install -e ".[dev]"
-
-# 4. Создаём .env
-cp .env.example .env
-nano .env  # заполняем переменные окружения
-
-# 5. Запускаем миграцию БД
-alembic upgrade head
-
-# 6. Заполняем тестовыми данными (опционально)
-python scripts/db-seed.py
-
-# 7. Запускаем приложение
-fastapi dev src/app/main:app
+python -m pytest tests/
+python -m ruff check .
+cd dashboard && npm ci && npm test -- --run && npm run build
 ```
-
-## Запуск
-
-### Docker (рекомендуется)
-
-```bash
-# Запуск всех сервисов (app + db + redis + prometheus + grafana)
-docker-compose -f docker-compose.yml up -d
-
-# Проверка статуса
-docker-compose ps
-
-# Логи
-docker-compose logs -f app
-```
-
-### Docker Compose (продакшен)
-
-```bash
-docker-compose -f docker-compose.prod.yml up -d
-```
-
-### Docker (прямой запуск)
-
-```bash
-docker build -t tg-userbot:latest .
-docker run -d \
-  -p 8000:8000 \
-  -e TG_BOT_TOKEN=your_token \
-  -e SUPABASE_URL=your_url \
-  -e SUPABASE_ANON_KEY=your_key \
-  tg-userbot:latest
-```
-
-## API
-
-API описано в OpenAPI-документации:
-
-```bash
-# Запуск отладочного сервера
-fastapi dev src/app/main:app
-
-# Открыть Swagger UI
-# http://localhost:8000/docs
-```
-
-### `/api/media`
-
-```http
-GET /api/media
-GET /api/media/:id
-POST /api/media
-PUT /api/media/:id
-DELETE /api/media/:id
-```
-
-### `/api/media/search`
-
-```http
-POST /api/media/search
-Content-Type: application/json
-
-{
-  "query": "lofi beats",
-  "limit": 20,
-  "offset": 0
-}
-```
-
-### `/api/media/upload`
-
-```http
-POST /api/media/upload
-Content-Type: multipart/form-data
-
-file: <binary>
-caption: "lofi beats"
-tags: ["lofi", "beats"]
-```
-
-### `/api/media/metadata`
-
-```http
-POST /api/media/metadata
-Content-Type: application/json
-
-{
-  "media_id": 123,
-  "artist": "Chill Cow",
-  "album": "LoFi Study",
-  "year": 2024
-}
-```
-
-## Dashboard
-
-React-панель для управления медиа-библиотекой:
-
-- Просмотр медиатеки
-- Поиск и фильтрация
-- Категории, теги, коллекции
-- Статистика и аналитика
-
-```bash
-# Запуск dev-сервера для dashboard
-cd dashboard
-npm install
-npm run dev
-```
-
-Открыть `http://localhost:3000`
-
-## Медиа-библиотека
-
-### Команды
-
-| Команда | Описание |
-|---------|----------|
-| `media add` | Добавить медиа-файл в библиотеку |
-| `media pull` | Скачать медиа-файл |
-| `media sync` | Синхронизация с облачным зеркалом |
-| `media del` | Удалить медиа-файл |
-| `media list` | Список медиа-файлов |
-
-### Пример: добавление медиа
-
-```bash
-media add --url "https://cdn.example.com/video.mp4" --title "Lofi Beats" --tags "lofi,beats"
-```
-
-### Пример: поиск
-
-```bash
-media search --query "lofi" --limit 20
-```
-
-## Telegram-интеграция
-
-### Настройка бота
-
-1. Создать бота через `@BotFather`
-2. Скопировать токен в `.env`:
-   ```
-   TG_BOT_TOKEN=123456:ABC...
-   ```
-3. Запустить бота:
-   ```bash
-   TG_BOT_TOKEN=$(cat .env | grep TG_BOT_TOKEN | cut -d'=' -f2) \
-   poetry run tg-userbot
-   ```
-
-### Команды бота
-
-| Команда | Описание |
-|---------|----------|
-| `/media` | Показать медиатеку |
-| `/search` | Поиск по медиатеке |
-| `/upload` | Загрузить медиа |
-| `/stats` | Статистика |
-
-## Contributing
-
-1. Fork репозиторий
-2. Создай ветку (`git checkout -b feature/amazing-feature`)
-3. Запуш (`git push origin feature/amazing-feature`)
-4. Открой PR
-
-### Разработчик-стек
-
-```bash
-make install       # pip install -e ".[dev]"
-make dev           # fastapi dev src/app/main:app
-make test          # pytest tests/ -v --cov
-make lint          # ruff check src/ tests/
-make format        # black src/ tests/ ruff format src/ tests/
-make docs          # mkdocs serve
-```
-
-### Commit-конвенция
-
-```
-feat: новая фича
-fix: исправление бага
-docs: документация
-refactor: рефакторинг
-test: тесты
-chore: рутина
-```
-
-## Лицензия
-
-MIT © Novra

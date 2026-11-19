@@ -1,3 +1,18 @@
+import { errorTextFor } from "./command-kinds";
+
+/** Человеческая ошибка для UI вместо сырого текста сервера. */
+export function friendlyError(reason) {
+  if (!reason) return "";
+  const message = reason instanceof Error ? reason.message : String(reason);
+  if (!message) return "";
+  const mapped = errorTextFor(new Error(message));
+  if (mapped !== message) return mapped;
+  if (/Failed to fetch|NetworkError|Load failed/i.test(message)) {
+    return "Нет связи с сервером. Проверьте интернет и повторите.";
+  }
+  return message;
+}
+
 export function formatNumber(value) {
   if (value === null || value === undefined || value === "") return "—";
   const number = Number(value);

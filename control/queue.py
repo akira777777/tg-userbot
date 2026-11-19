@@ -47,6 +47,23 @@ class QueueRepository:
     def _now(self) -> datetime:
         return datetime.now(UTC)
 
+    def heartbeat(self, worker_id: str) -> bool:
+        """Обновляет tb_worker_heartbeat для панели. Не бросает исключений: сердцебиение — best effort."""
+        if self._client is None:
+            return False
+        try:
+            result = (
+                self._client.table("tb_worker_heartbeat")
+                .upsert(
+                    {"worker_id": worker_id, "last_heartbeat_at": self._now().isoformat()},
+                    on_conflict="worker_id",
+                )
+                .execute()
+            )
+            return bool(result and result.data)
+        except Exception:
+            return False
+
     def enqueue(
         self,
         owner_telegram_id: int,
@@ -70,7 +87,7 @@ class QueueRepository:
             .maybe_single()
             .execute()
         )
-        if existing.data:
+        if existing and existing.data:
             return self._record(existing.data, idempotency_key=idempotency_key, requested_by=owner_telegram_id)
 
         insert = {
@@ -87,8 +104,22 @@ class QueueRepository:
             "created_at": self._now().isoformat(),
             "version": 0,
         }
-        result = self._client.table("control_commands").insert(insert).execute()
-        if not result.data:
+        try:
+            result = self._client.table("control_commands").insert(insert).execute()
+        except Exception as exc:
+            if "23505" in str(exc) or "duplicate" in str(exc).lower():
+                raced = (
+                    self._client.table("control_commands")
+                    .select("id,status,kind,mode,account,payload,created_at,version,confirmation_nonce")
+                    .eq("owner_telegram_id", owner_telegram_id)
+                    .eq("idempotency_key", str(idempotency_key))
+                    .maybe_single()
+                    .execute()
+                )
+                if raced and raced.data:
+                    return self._record(raced.data, idempotency_key=idempotency_key, requested_by=owner_telegram_id)
+            raise
+        if not result or not result.data:
             return None
         rec = result.data[0]
         self._append_event(
@@ -119,7 +150,7 @@ class QueueRepository:
             },
         ).execute()
 
-        rows = rpc.data or []
+        rows = (rpc.data if rpc else None) or []
         return [self._record(row) for row in rows]
 
     def renew_lease(
@@ -151,7 +182,7 @@ class QueueRepository:
             .maybe_single()
             .execute()
         )
-        if not result.data:
+        if not result or not result.data:
             return None
         rec = result.data
         lease_raw = rec.get("lease_expires_at")
@@ -184,7 +215,7 @@ class QueueRepository:
             .maybe_single()
             .execute()
         )
-        return bool(result.data)
+        return bool(result and result.data)
 
     def fail(
         self,
@@ -211,7 +242,7 @@ class QueueRepository:
             .eq("status", CommandStatus.PENDING.value)
             .execute()
         )
-        if pending.data:
+        if pending and pending.data:
             return True
         if not worker_id:
             return False
@@ -223,7 +254,7 @@ class QueueRepository:
             .eq("claimed_by", worker_id)
             .execute()
         )
-        return bool(claimed.data)
+        return bool(claimed and claimed.data)
 
     def get_history(
         self,
@@ -242,7 +273,7 @@ class QueueRepository:
             .range(offset, offset + limit - 1)
             .execute()
         )
-        rows = result.data or []
+        rows = (result.data if result else None) or []
         return [self._record(row) for row in rows]
 
     def get_command(self, command_id: UUID, owner_telegram_id: int) -> CommandRecord | None:
@@ -257,21 +288,38 @@ class QueueRepository:
             .maybe_single()
             .execute()
         )
-        if not result.data:
+        if not result or not result.data:
             return None
         return self._record(result.data)
+
+    def next_event_sequence(self, command_id: UUID) -> int:
+        """Следующий свободный номер события для команды (первичный ключ — command_id+sequence)."""
+        if self._client is None:
+            raise RuntimeError("Supabase client не инициализирован")
+        rows = (
+            self._client.table("control_command_events")
+            .select("sequence")
+            .eq("command_id", str(command_id))
+            .order("sequence", desc=True)
+            .limit(1)
+            .execute()
+        )
+        latest = rows.data[0]["sequence"] if rows and rows.data else 0
+        return int(latest) + 1
 
     def append_event(
         self,
         command_id: UUID,
-        sequence: int,
-        level: str,
-        event_type: str,
-        safe_message: str,
+        sequence: int | None = None,
+        level: str = "info",
+        event_type: str = "event",
+        safe_message: str = "",
     ) -> bool:
         if self._client is None:
             raise RuntimeError("Supabase client не инициализирован")
 
+        if sequence is None:
+            sequence = self.next_event_sequence(command_id)
         try:
             self._client.table("control_command_events").insert(
                 {

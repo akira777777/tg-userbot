@@ -99,3 +99,16 @@ def test_both_argv_has_no_time_window():
     assert slot == "conductor"
     assert "--window" not in argv
     assert "both" in argv
+
+
+def test_both_dry_run_argv_keeps_kind_and_never_repeats():
+    spec = build_control_cli(
+        CommandKind.CONDUCT,
+        ConductPayload(kind="both", text="проверка", limit=5, repeat_ok=False),
+        "all",
+        CommandMode.DRY_RUN,
+    )
+    assert spec is not None
+    assert spec.argv[:3] == ["conduct", "--what", "both"]
+    assert "--repeat-ok" not in spec.argv
+    assert "--dry-run" in spec.argv

@@ -155,7 +155,10 @@ async def test_successful_command_completes_once_with_terminal_sequence():
     assert runtime.calls == 1
     assert len(worker._queue.completed) == 1
     assert worker._queue.completed[0]["status"] == CommandStatus.SUCCEEDED
-    assert worker._queue.events[0]["sequence"] == 2
+    # Номер события больше не проставляется воркером: его выделяет репозиторий,
+    # иначе фиксированная «2» конфликтует с событием "queued" и события теряются.
+    assert "sequence" not in worker._queue.events[0]
+    assert worker._queue.events[0]["event_type"] == "completed"
 
 
 @pytest.mark.asyncio

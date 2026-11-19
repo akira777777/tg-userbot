@@ -1,4 +1,8 @@
+import { delayPair } from "./command-options";
+
 export const READ_KINDS = new Set(["STATUS", "GROUPS", "CAMPAIGNS", "MEDIA_LIST"]);
+/** Команды, которые физически что-то отправляют в Telegram. */
+export const DANGEROUS_KINDS = new Set(["BROADCAST", "DMSEND", "CONDUCT"]);
 export const DELIVERY_KINDS = new Set(["BROADCAST", "DMSEND", "CONDUCT"]);
 
 export const COMMANDS = [
@@ -37,15 +41,6 @@ function groupIdValue(value) {
   return id;
 }
 
-function delayPair(delayMin, delayMax) {
-  const min = Number(delayMin);
-  const max = Number(delayMax);
-  return {
-    delay_min: Number.isFinite(min) && min > 0 ? min : 20,
-    delay_max: Number.isFinite(max) && max > 0 ? max : 45,
-  };
-}
-
 export function payloadFor(kind, {
   text = "",
   delayMin = 20,
@@ -61,10 +56,12 @@ export function payloadFor(kind, {
   const trimmed = text.trim();
   const target = groupIdValue(groupId);
   if (kind === "CONDUCT") {
-    const mode = conductKind === "dm" || conductKind === "both" ? conductKind : "broadcast";
+    const requested = conductKind === "dm" || conductKind === "both" ? conductKind : "broadcast";
+    // Режим "channel" (каналы) уходит воркеру как обычная рассылка по группам.
+    const mode = requested === "channel" ? "broadcast" : requested;
     const payload = { text: trimmed, kind: mode };
-    if (target && mode === "dm") payload.group_id = target;
-    if (target && mode === "broadcast") payload.group_ids = [target];
+    if (target && (mode === "dm" || mode === "both")) payload.group_id = target;
+    if (target && (mode === "broadcast" || mode === "both")) payload.group_ids = [target];
     if (mode === "dm" || mode === "both") {
       const parsed = Number(limit);
       if (mode === "dm") {
@@ -83,6 +80,22 @@ export function payloadFor(kind, {
   }
   if (kind === "BROADCAST" && target) payload.group_ids = [target];
   return payload;
+}
+
+/** Совместимость с HTTP-ошибками: текст ошибки очереди бывает по-английски. */
+export function errorTextFor(reason) {
+  if (!reason) return "";
+  const message = reason instanceof Error ? reason.message : String(reason);
+  if (/^Unauthenticated$/.test(message) || /Необходим вход/.test(message)) {
+    return "Сессия истекла — переоткройте панель из Telegram.";
+  }
+  if (/Confirmation is invalid or expired/i.test(message)) {
+    return "Подтверждение устарело (даётся 5 минут). Нажмите «Запустить» ещё раз.";
+  }
+  if (/Could not verify confirmation/i.test(message)) {
+    return "Не удалось проверить подтверждение. Повторите запуск.";
+  }
+  return message;
 }
 
 export function commandLabel(kind) {

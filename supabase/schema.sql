@@ -9,8 +9,16 @@ create table if not exists tb_accounts (
   groups_covered int default 0,
   writable_groups int default 0,
   dm_today int default 0,
+  registered_at text,                 -- возраст аккаунта: источник потолка DM
+  spam_strikes int default 0,         -- сколько раз аккаунт получал PEER_FLOOD
+  last_peerflood_at text,
   synced_at timestamptz default now()
 );
+
+-- Миграция для уже развёрнутой панели: безопасно выполнить повторно.
+alter table tb_accounts add column if not exists registered_at text;
+alter table tb_accounts add column if not exists spam_strikes int default 0;
+alter table tb_accounts add column if not exists last_peerflood_at text;
 
 create table if not exists tb_groups (
   id bigint primary key,
@@ -98,6 +106,13 @@ create table if not exists control_confirmations (
   created_at timestamptz not null default now()
 );
 
+-- Сердцебиение локального воркера команд: панель показывает, жив ли воркер.
+-- Только service_role; PII нет (id воркера + время).
+create table if not exists tb_worker_heartbeat (
+  worker_id text primary key,
+  last_heartbeat_at timestamptz not null default now()
+);
+
 -- RPC: атомарное взятие команд в аренду воркером.
 -- DROP обязателен: Postgres не меняет тип строки через CREATE OR REPLACE.
 drop function if exists claim_control_commands(text, integer, integer);
@@ -127,7 +142,19 @@ declare
   v_now timestamptz := now();
   v_lease timestamptz := v_now + (p_lease_seconds || ' seconds')::interval;
 begin
-  -- Возвращаем команды, которые можно взять: PENDING или истёкший lease у RUNNING/CLAIMED
+  -- Просроченные LIVE-команды доставки НЕ перезапускаем автоматически:
+  -- переводим в EXPIRED, чтобы исключить двойную рассылку после падения воркера.
+  update control_commands as stale
+  set status = 'EXPIRED',
+      finished_at = v_now,
+      error_code = 'expired',
+      result_summary = coalesce(stale.result_summary, '{"ok":false,"error":"аренда LIVE-команды истекла"}'::jsonb)
+  where stale.status in ('CLAIMED','RUNNING')
+    and stale.lease_expires_at < v_now
+    and stale.mode = 'LIVE'
+    and stale.kind in ('BROADCAST','DMSEND','CONDUCT');
+
+  -- Возвращаем команды, которые можно взять: PENDING или истёкший lease у безопасных команд
   return query
   update control_commands as queued
   set status = 'CLAIMED',
@@ -202,7 +229,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['tb_accounts', 'tb_groups', 'tb_campaigns', 'tb_sent', 'tb_blacklist', 'tb_stats', 'control_commands', 'control_command_events', 'control_confirmations'] loop
+  foreach t in array array['tb_accounts', 'tb_groups', 'tb_campaigns', 'tb_sent', 'tb_blacklist', 'tb_stats', 'tb_worker_heartbeat', 'control_commands', 'control_command_events', 'control_confirmations'] loop
     execute format('alter table if exists %I enable row level security', t);
     execute format('alter table if exists %I force row level security', t);
     execute format('drop policy if exists anon_read on %I', t);

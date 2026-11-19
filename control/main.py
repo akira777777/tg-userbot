@@ -26,12 +26,17 @@ def healthcheck() -> int:
         return 0
 
 
-def main() -> None:
-    if len(sys.argv) < 2:
+def main(argv: list[str] | None = None) -> None:
+    args = list(sys.argv[1:] if argv is None else argv)
+    # Поддерживаем оба документированных формата:
+    # `python -m control main healthcheck` и `python -m control.main healthcheck`
+    if args and args[0] == "main":
+        args = args[1:]
+    if not args:
         print("Использование: python -m control main <telegram-bot|worker|healthcheck>")
         sys.exit(2)
 
-    mode = sys.argv[1]
+    mode = args[0]
     if mode == "telegram-bot":
         bot_main()
     elif mode == "worker":

@@ -26,6 +26,7 @@ from urllib.parse import quote
 
 from aiohttp import web
 
+from bot import DM_ELIGIBLE_WHERE
 from control.cli_argv import build_web_args
 from control.slots import SlotLocker
 
@@ -360,10 +361,8 @@ def read_state():
             "blacklist": c("SELECT COUNT(*) FROM blacklist"),
             "campaigns": c("SELECT COUNT(*) FROM campaigns"),
             "dm_available": c(
-                "SELECT COUNT(*) FROM members m WHERE m.is_bot=0 "
-                "AND m.user_id NOT IN (SELECT user_id FROM blacklist) "
-                "AND m.user_id NOT IN (SELECT CAST(s.target AS INTEGER) FROM sent s "
-                " JOIN campaigns c ON c.id=s.campaign WHERE c.kind='dm' AND s.status='ok')"),
+                "SELECT COUNT(*) FROM members m WHERE " + DM_ELIGIBLE_WHERE  # nosec B608
+            ),
             "group_rows": groups,
             "last_campaigns": [dict(r) for r in con.execute(
                 "SELECT c.id,c.kind,c.account,c.text,substr(c.created_at,1,16) created_at, "

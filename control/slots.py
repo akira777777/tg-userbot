@@ -56,10 +56,21 @@ class SlotLocker:
                 handle.flush()
             handle.seek(0)
             _lock_nb(handle)
-            return handle
         except OSError:
+            # Слот уже занят другим процессом — файл закрываем сразу, чтобы
+            # Windows не считал его открытым и не мешал другим командам.
             handle.close()
             return None
+        if os.name == "nt":
+            # msvcrt.locking держит байт по текущей позиции файлового указателя.
+            # Если оставить указатель на позиции 0, любые повторные записи/чтения
+            # этого дескриптора в том же процессе ловят EACCES и выглядят как
+            # «database is locked» из sqlite внутри Telethon.
+            try:
+                handle.seek(1)
+            except OSError:
+                pass
+        return handle
 
     @staticmethod
     def _unlock_file(handle) -> None:

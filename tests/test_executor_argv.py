@@ -60,7 +60,7 @@ def test_read_only_commands_do_not_send():
     runtime = _runtime()
     expected = {
         CommandKind.STATUS: ["status"],
-        CommandKind.CAMPAIGNS: ["status"],
+        CommandKind.CAMPAIGNS: ["report"],
         CommandKind.GROUPS: ["groups", "--list", "--account", "main"],
         CommandKind.MEDIA_LIST: ["media", "list", "--account", "main"],
     }

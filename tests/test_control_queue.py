@@ -77,6 +77,9 @@ class _Table:
     def update(self, row: dict) -> _Query:
         return _Query(self.db, self.name, "update", row)
 
+    def upsert(self, row: dict, *, on_conflict: str = "") -> _Query:
+        return _Query(self.db, self.name, "upsert", row)
+
 
 class FakeSupabase:
     def __init__(self) -> None:
@@ -99,7 +102,7 @@ class FakeSupabase:
         if query.action == "rpc":
             return _Result(list(self.claim_rows))
         rows = self.tables.setdefault(query.table, [])
-        if query.action == "insert":
+        if query.action in ("insert", "upsert"):
             if query.table == "control_command_events":
                 for existing in rows:
                     if (
@@ -108,6 +111,11 @@ class FakeSupabase:
                     ):
                         raise RuntimeError("duplicate sequence")
             stored = dict(query.body)
+            if query.action == "upsert" and query.table == "tb_worker_heartbeat":
+                for existing in rows:
+                    if existing.get("worker_id") == stored.get("worker_id"):
+                        existing.update(stored)
+                        return _Result([dict(existing)])
             rows.append(stored)
             return _Result([stored])
         matched = [row for row in rows if all(row.get(key) == value for key, value in query.filters.items())]
@@ -232,6 +240,22 @@ def test_enqueue_is_idempotent_and_terminal_event_is_sequence_two():
     assert repo.append_event(first.id, 1, "info", "completed", "повтор") is False
     assert repo.append_event(first.id, 2, "info", "completed", "готово") is True
     assert [row["sequence"] for row in fake.tables["control_command_events"]] == [1, 2]
+
+
+def test_heartbeat_upserts_worker_row_and_never_raises():
+    repo, fake = _repo()
+
+    assert repo.heartbeat("worker-a") is True
+    assert repo.heartbeat("worker-a") is True
+    assert repo.heartbeat("worker-b") is True
+
+    rows = {row["worker_id"]: row for row in fake.tables["tb_worker_heartbeat"]}
+    assert set(rows) == {"worker-a", "worker-b"}
+    assert rows["worker-a"]["last_heartbeat_at"]
+    assert datetime.fromisoformat(rows["worker-a"]["last_heartbeat_at"]).tzinfo is not None
+
+    offline = QueueRepository(_settings(), client=None)
+    assert offline.heartbeat("worker-a") is False
 
 
 def test_live_nonce_round_trips_and_missing_nonce_is_rejected():

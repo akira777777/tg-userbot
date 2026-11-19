@@ -22,8 +22,8 @@ jobs:
           cache: pip
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest tests/ --cov=control --cov=bot --cov=cloud --cov-report=xml
-      - run: python -m ruff check bot.py cloud.py web.py control tests scripts/healthcheck.py
-      - run: python -m bandit -q -ll -r bot.py cloud.py web.py control scripts/healthcheck.py
+      - run: python -m ruff check .
+      - run: python -m bandit -q -ll -r bot.py cloud.py web.py control scripts
       - uses: codecov/codecov-action@v4
         with:
           files: coverage.xml

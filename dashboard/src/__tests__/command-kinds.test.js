@@ -43,6 +43,21 @@ describe("command payloads", () => {
       kind: "both",
       limit: 4,
     });
+    expect(payloadFor("CONDUCT", { text: " both ", conductKind: "both", groupId: "-10042", limit: 10 })).toEqual({
+      text: "both",
+      kind: "both",
+      group_id: -10042,
+      group_ids: [-10042],
+      limit: 10,
+    });
+  });
+
+  it("normalizes reversed delay bounds consistently with delayPair", () => {
+    expect(payloadFor("BROADCAST", { text: "hi", delayMin: 45, delayMax: 20 })).toEqual({
+      text: "hi",
+      delay_min: 20,
+      delay_max: 45,
+    });
   });
 });
 

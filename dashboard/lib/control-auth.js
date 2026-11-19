@@ -27,15 +27,20 @@ export function sessionSecret() {
 }
 function sign(value) { return crypto.createHmac("sha256", sessionSecret()).update(value).digest("base64url"); }
 
+const HEX_64_RE = /^[0-9a-f]{64}$/;
+
 export function verifyTelegramInitData(initData, nowSeconds = Math.floor(Date.now() / 1000)) {
   if (typeof initData !== "string" || !initData) throw new Error("Missing Telegram authentication data");
   const parameters = new URLSearchParams(initData);
   const hash = parameters.get("hash");
-  if (!hash || parameters.getAll("hash").length !== 1) throw new Error("Invalid Telegram authentication data");
+  if (!hash || !HEX_64_RE.test(hash) || parameters.getAll("hash").length !== 1) throw new Error("Invalid Telegram authentication data");
   const fields = [];
   for (const [key, value] of parameters.entries()) if (key !== "hash") fields.push([key, value]);
   if (new Set(fields.map(([key]) => key)).size !== fields.length) throw new Error("Invalid Telegram authentication data");
-  const check = fields.sort(([left], [right]) => left.localeCompare(right)).map(([key, value]) => `${key}=${value}`).join("\n");
+  const check = fields
+    .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
   const expected = hmac(hmac("WebAppData", required("BOT_TOKEN")), check).toString("hex");
   const actualBuffer = Buffer.from(hash, "hex");
   const expectedBuffer = Buffer.from(expected, "hex");
@@ -48,10 +53,20 @@ export function verifyTelegramInitData(initData, nowSeconds = Math.floor(Date.no
   return { id: user.id, firstName: typeof user.first_name === "string" ? user.first_name : null };
 }
 
+export function sessionCookieOptions(isProd = process.env.NODE_ENV === "production") {
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: isProd ? "none" : "lax",
+    maxAge: SESSION_TTL_SECONDS,
+    path: "/",
+  };
+}
+
 export async function createSession(identity) {
   const expiresAt = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const value = `${identity.id}.${expiresAt}`;
-  (await cookies()).set(SESSION_COOKIE, `${value}.${sign(value)}`, { httpOnly: true, secure: true, sameSite: "lax", maxAge: SESSION_TTL_SECONDS, path: "/" });
+  (await cookies()).set(SESSION_COOKIE, `${value}.${sign(value)}`, sessionCookieOptions());
 }
 
 async function verifiedSessionId() {
@@ -71,5 +86,21 @@ async function verifiedSessionId() {
 }
 
 export async function requireOwnerSession() {
+  if (isLocalMode()) {
+    // Локальный режим только для личной страницы на своём компьютере.
+    // На проде (Vercel, NODE_ENV=production) флаг игнорируется — сессия не выдаётся.
+    if (process.env.NODE_ENV === "production") throw new Error("Unauthenticated");
+    return { id: localOwnerId() };
+  }
   return { id: await verifiedSessionId() };
+}
+
+/** Локальный режим «просто веб-страница»: CONTROL_LOCAL_MODE=1. */
+export function isLocalMode() {
+  return process.env.CONTROL_LOCAL_MODE === "1";
+}
+
+function localOwnerId() {
+  const parsed = Number.parseInt(process.env.LOCAL_OWNER_ID ?? "1", 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1;
 }

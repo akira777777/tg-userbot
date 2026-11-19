@@ -81,7 +81,7 @@ exclude = '''
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-exclude = [".venv", "__pycache__", "*.egg-info"]
+exclude = [".venv", "__pycache__", "*.egg-info", "_archive", "_[!_]*.py"]
 
 [tool.ruff.lint]
 select = ["E9", "F"]
@@ -96,7 +96,7 @@ exclude = ["tests/", "docs/", "scripts/", "build/", "dist/", "dashboard/"]
 
 [tool.pytest.ini_options]
 minversion = "8.3"
-addopts = "-ra -q --strict-markers --cov=control --cov-report=term-missing"
+addopts = "-ra -q --strict-markers"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = [
@@ -106,7 +106,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source = ["control"]
+source = ["bot", "cloud", "control"]
 branch = true
 omit = ["*/__init__.py", "*/test_*.py", "*/conftest.py"]
 
@@ -119,7 +119,7 @@ exclude_lines = [
 ]
 
 [tool.coverage.paths]
-source = ["control"]
+source = ["bot.py", "cloud.py", "control"]
 
 [tool.coverage.html]
 directory = "htmlcov"

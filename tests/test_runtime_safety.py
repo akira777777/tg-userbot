@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import signal
 import sqlite3
 import subprocess
@@ -70,6 +71,12 @@ async def test_local_panel_writes_without_token():
         assert "unauthorized" not in body.get("error", "")
 
 
+POSIX_ONLY = pytest.mark.skipif(
+    not hasattr(os, "killpg"), reason="killpg есть только на POSIX"
+)
+
+
+@POSIX_ONLY
 @pytest.mark.asyncio
 async def test_posix_stop_signals_process_group(monkeypatch):
     monkeypatch.setattr(web, "_windows", lambda: False)
@@ -85,6 +92,7 @@ async def test_posix_stop_signals_process_group(monkeypatch):
     assert signals == [(55, signal.SIGTERM), (55, signal.SIGKILL)]
 
 
+@POSIX_ONLY
 @pytest.mark.asyncio
 async def test_posix_stop_returns_false_when_process_is_gone(monkeypatch):
     monkeypatch.setattr(web, "_windows", lambda: False)

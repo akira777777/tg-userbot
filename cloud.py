@@ -69,6 +69,14 @@ def connect_local():
     return con
 
 
+def _col(row, name, default=None):
+    """Колонка по имени; старые базы без неё отдают default, а не падают."""
+    try:
+        return row[name] if row[name] is not None else default
+    except (IndexError, KeyError):
+        return default
+
+
 def _rows_by(con, sql, key, params=()):
     return {row[key]: row for row in con.execute(sql, params)}
 
@@ -103,6 +111,10 @@ def gather(con):
         accs.append({"name": name, "user_id": a["user_id"],
                      "enabled": bool(a["enabled"]), "daily_budget": a["daily_budget"],
                      "flood_until": a["flood_until"], "note": a["note"],
+                     # Анти-спам статус: возраст и число PEER_FLOOD видны в панели.
+                     "registered_at": _col(a, "registered_at"),
+                     "spam_strikes": int(_col(a, "spam_strikes") or 0),
+                     "last_peerflood_at": _col(a, "last_peerflood_at"),
                      "groups_covered": cov["covered"] if cov else 0,
                      "writable_groups": cov["writable"] if cov else 0,
                      "dm_today": dm_by_account[name]["c"] if name in dm_by_account else 0,

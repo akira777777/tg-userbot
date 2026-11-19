@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import bot
 import web
 from control.config import ControlSettings
@@ -86,3 +88,35 @@ def test_web_panel_argv_matches_bot_parser():
     for payload in samples:
         argv, _slot, _account = web.build_args(payload)
         _parse(argv)
+
+def test_web_panel_scopes_argv_to_account_and_slot():
+    argv, slot, _account = web.build_args({"action": "sync", "account": "work2"})
+    assert argv == ["groups", "--sync", "--account", "work2"]
+    assert slot == "work2"
+
+    _argv, slot, _account = web.build_args({"action": "export"})
+    assert slot == "db"
+
+    argv, _slot, _account = web.build_args(
+        {"action": "broadcast", "text": "т", "dry": True, "account": "main", "repeat_ok": True}
+    )
+    assert "--repeat-ok" in argv
+    assert argv[-2:] == ["--account", "main"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "fragment"),
+    [
+        ({"action": "rm -rf"}, "неизвестное действие"),
+        ({"action": "broadcast", "dry": False, "text": "  "}, "текст или медиа"),
+        ({"action": "broadcast", "dry": True, "text": ""}, "текст или медиа"),
+        ({"action": "blacklist_add", "value": "-rf /"}, "только @ник"),
+        ({"action": "dmsend", "text": "x", "delay_min": "abc"}, "задержки"),
+        ({"action": "sync", "account": "BAD NAME"}, "аккаунт"),
+        ({"action": "dmsend", "text": "t", "account": "оскест"}, "аккаунт"),
+        ({"action": "accounts", "op": "budget", "name": "w9", "value": "9999"}, "0\\.\\.500"),
+    ],
+)
+def test_web_panel_rejects_unsafe_or_incomplete_input(payload, fragment):
+    with pytest.raises(ValueError, match=fragment):
+        web.build_args(payload)

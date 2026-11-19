@@ -1,5 +1,8 @@
 # секреты и доступы — НИКОГДА не в репозитории
 .env
+.env.*
+!.env.example
+*.bak*
 account-secrets.json
 control-stop.json
 *.session
@@ -9,6 +12,7 @@ sessions/
 media_cache/
 
 # личные данные и артефакты работы
+*.db
 userbot.db
 userbot.db-wal
 userbot.db-shm
@@ -16,6 +20,9 @@ test*.db
 exports/
 logs/
 locks/
+_archive/
+supabase/.temp/
+supabase/supabase/
 
 # окружение
 .venv/
@@ -37,11 +44,16 @@ dashboard/coverage/
 .vscode/launch.json
 
 # Инструменты и артефакты
+.agents/
+.cursor/
 .serena/
+.swarm/
 .claude-flow/
 .control_state/
 
 # Тестовые артефакты
 .pytest_cache/
+.ruff_cache/
 .coverage
 htmlcov/
+*.log

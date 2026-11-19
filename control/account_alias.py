@@ -21,10 +21,18 @@ class AccountAliasMapper:
     def __init__(self, internal_names: list[str] | None = None) -> None:
         self._aliases: dict[str, AccountAlias] = {}
         self._counter = 1
-        for name in internal_names or []:
+        # Детерминированный порядок: main всегда первый, далее по ASCII-имени,
+        # чтобы псевдоним «Аккаунт N» совпадал между воркером и панелью (DASH-603).
+        ordered = sorted(
+            {name for name in (internal_names or []) if name and name != "all"},
+            key=lambda name: (0 if name == "main" else 1, name),
+        )
+        for name in ordered:
             self.register(name)
 
     def register(self, internal_name: str) -> AccountAlias:
+        if internal_name == "all":
+            return AccountAlias(internal_name="all", display_name="Все аккаунты", is_eligible=True)
         if internal_name in self._aliases:
             return self._aliases[internal_name]
         display = f"Аккаунт {self._counter}"
@@ -38,6 +46,8 @@ class AccountAliasMapper:
         return alias
 
     def to_alias(self, internal_name: str) -> AccountAlias:
+        if internal_name == "all":
+            return AccountAlias(internal_name="all", display_name="Все аккаунты", is_eligible=True)
         if internal_name not in self._aliases:
             return self.register(internal_name)
         return self._aliases[internal_name]
@@ -53,8 +63,10 @@ class AccountAliasMapper:
 
     def mask_internal_name(self, internal_name: str) -> str:
         """Возвращает display_name для использования в логах/UI."""
+        if internal_name == "all":
+            return "Все аккаунты"
         return self.to_alias(internal_name).display_name
 
     @staticmethod
     def is_valid_internal_name(name: str) -> bool:
-        return bool(re.fullmatch(r"^[a-z0-9_\-]{1,32}$", name or ""))
+        return bool(re.fullmatch(r"^[a-z0-9][a-z0-9_\-]{0,31}$", name or ""))

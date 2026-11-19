@@ -2,11 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import CommandForm from "../components/command-form";
-import CommandTimeline from "../components/command-timeline";
+import CommandTimeline, { StickyActionBar, useCommandsFeed } from "../components/command-timeline";
 import SnapshotView from "../components/snapshot-view";
-import { formatRelative } from "../lib/format";
+import { isFloodActive } from "../lib/command-options";
+import { controlFetch, establishControlSession } from "../lib/control-client";
+import { friendlyError, formatRelative } from "../lib/format";
+import { hapticImpact, initTelegramWebApp } from "../lib/telegram";
+import { readBrowserInitData } from "../lib/telegram-init-data";
+import { workerStatus } from "../lib/worker-status";
 
 const REFRESH_MS = 15_000;
+const WORKER_STALE_MS = 15 * 60_000;
 
 function renderedSnapshot(data) {
   return JSON.stringify({
@@ -14,8 +20,27 @@ function renderedSnapshot(data) {
     groups: data.groups ?? [],
     campaigns: data.campaigns ?? [],
     stats: data.stats ?? [],
+    syncedAt: data.syncedAt ?? null,
+    worker: data.worker ?? null,
+    localMode: Boolean(data.localMode),
     schemaMissing: Boolean(data.schemaMissing),
   });
+}
+
+function workerFreshness(syncedAt, now) {
+  if (!syncedAt) {
+    return { tone: "dim", label: "данных пока нет" };
+  }
+  const ts = Date.parse(syncedAt);
+  if (!Number.isFinite(ts)) {
+    return { tone: "dim", label: "время синхронизации неизвестно" };
+  }
+  const ageMs = Math.max(0, now - ts);
+  const rel = formatRelative(syncedAt, now);
+  if (ageMs > WORKER_STALE_MS) {
+    return { tone: "warn", label: `снимок устарел (${rel})` };
+  }
+  return { tone: "ok", label: `воркер синхронизирован ${rel}` };
 }
 
 export default function Home() {
@@ -25,10 +50,12 @@ export default function Home() {
   const [fetchedAt, setFetchedAt] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+
+  const feed = useCommandsFeed(refreshKey, { enabled: state === "ready" });
 
   const load = useCallback(async () => {
-    const response = await fetch("/api/control/bootstrap", { cache: "no-store" });
-    const body = await response.json();
+    const { response, body } = await controlFetch("/api/control/bootstrap");
     if (!response.ok || !body.ok) throw new Error(body.error || "Не удалось загрузить панель.");
     setFetchedAt(new Date().toISOString());
     setData((current) => {
@@ -39,19 +66,53 @@ export default function Home() {
 
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
+    hapticImpact("light");
     try {
+      if (state !== "ready" && readBrowserInitData()) {
+        await establishControlSession({ waitMs: 0 });
+      }
       await load();
+      setError("");
+      setState("ready");
       setRefreshKey((value) => value + 1);
     } catch (reason) {
-      setError(reason.message);
+      setError(friendlyError(reason));
+      if (!data) setState("error");
     } finally {
       setRefreshing(false);
     }
+  }, [data, load, state]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function start() {
+      try {
+        initTelegramWebApp();
+        window.Telegram?.WebApp?.ready?.();
+        window.Telegram?.WebApp?.expand?.();
+        if (readBrowserInitData()) {
+          await establishControlSession({ waitMs: 0 });
+        }
+        if (cancelled) return;
+        await load();
+        if (cancelled) return;
+        setError("");
+        setState("ready");
+      } catch (reason) {
+        if (cancelled) return;
+        setError(friendlyError(reason instanceof Error ? reason : "Не удалось открыть панель."));
+        setState("error");
+      }
+    }
+    start();
+    return () => {
+      cancelled = true;
+    };
   }, [load]);
 
   useEffect(() => {
+    if (state !== "ready") return undefined;
     let timer = 0;
-    let cancelled = false;
     const stopTimer = () => {
       if (timer) window.clearInterval(timer);
       timer = 0;
@@ -61,7 +122,7 @@ export default function Home() {
       if (document.hidden) return;
       timer = window.setInterval(() => {
         if (document.hidden) return;
-        load().catch((reason) => setError(reason.message));
+        load().catch((reason) => setError(friendlyError(reason)));
       }, REFRESH_MS);
     };
     const onVisibility = () => {
@@ -69,66 +130,123 @@ export default function Home() {
         stopTimer();
         return;
       }
-      load().catch((reason) => setError(reason.message));
+      load().catch((reason) => setError(friendlyError(reason)));
       startTimer();
     };
-    async function start() {
-      try {
-        window.Telegram?.WebApp?.ready?.();
-        window.Telegram?.WebApp?.expand?.();
-        if (cancelled) return;
-        await load();
-        setState("ready");
-        startTimer();
-        document.addEventListener("visibilitychange", onVisibility);
-      } catch (reason) {
-        if (cancelled) return;
-        setError(reason instanceof Error ? reason.message : "Не удалось открыть панель.");
-        setState("error");
-      }
-    }
-    start();
+    startTimer();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      cancelled = true;
       stopTimer();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [load]);
+  }, [load, state]);
+
+  useEffect(() => {
+    const tick = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(tick);
+  }, []);
+
+  const accounts = data?.accounts ?? [];
+  const groups = data?.groups ?? [];
+  const activeAccounts = accounts.filter((item) => item.enabled !== false && !isFloodActive(item.flood_until, now)).length;
+  const freshness = data?.localMode
+    ? { tone: "ok", label: "данные из локальной базы" }
+    : workerFreshness(data?.syncedAt, now);
+  const worker = workerStatus(data?.worker, now);
 
   return (
     <main className="wrap">
       <header className="hero">
-        <div>
+        <div className="hero-text">
           <p className="eyebrow">TG USERBOT</p>
           <h1>Панель управления</h1>
-          <p className="muted">
-            Панель открыта. Команды уходят в локальный воркер.
-            {fetchedAt && <> Обновлено {formatRelative(fetchedAt)}.</>}
-          </p>
+          {state === "ready" && (
+            <>
+              <p className="muted hero-status">
+                {accounts.length
+                  ? <>Активны <b>{activeAccounts}</b> из {accounts.length} аккаунтов · {data.localMode ? "в базе" : "в зеркале"} <b>{groups.length}</b> групп</>
+                  : "Данных пока нет — дождитесь синхронизации воркера."}
+              </p>
+              <p className="hero-freshness">
+                <span className={`chip ${freshness.tone}`}>{freshness.label}</span>
+                <span className={`chip ${worker.tone}`}>{worker.label}</span>
+              </p>
+            </>
+          )}
         </div>
         {state === "ready" && (
-          <button className="icon-btn" type="button" onClick={refreshAll} disabled={refreshing}>
-            {refreshing ? "…" : "Обновить"}
+          <button
+            className={`icon-btn refresh${refreshing ? " spinning" : ""}`}
+            type="button"
+            onClick={refreshAll}
+            disabled={refreshing}
+            aria-label="Обновить данные"
+            title={fetchedAt ? `Обновлено ${formatRelative(fetchedAt, now)}` : "Обновить"}
+          >
+            <span className="refresh-icon" aria-hidden="true">↻</span>
+            <span className="icon-btn-text">{refreshing ? "Обновляю…" : "Обновить"}</span>
           </button>
         )}
       </header>
+
       {state === "authorizing" && (
         <>
           <p className="notice">Загружаю панель…</p>
-          <div className="skeleton" />
+          <div className="skeleton-group" aria-hidden="true">
+            <div className="skeleton" />
+            <div className="skeleton" />
+            <div className="skeleton" />
+          </div>
         </>
       )}
-      {state === "error" && <p className="notice error" role="alert">{error}</p>}
+      {state === "error" && (
+        <div className="notice error" role="alert">
+          <p><strong>Не удалось открыть панель</strong></p>
+          <p>{error}</p>
+          <button type="button" className="ghost" onClick={refreshAll} disabled={refreshing}>
+            {refreshing ? "Проверяю…" : "Попробовать снова"}
+          </button>
+        </div>
+      )}
       {state === "ready" && data && (
         <>
-          {error && <p className="notice error" role="alert">{error}</p>}
-          <SnapshotView data={data} />
+          {error && <div className="notice error" role="alert">{error}</div>}
+
+          <StickyActionBar commands={feed.commands} />
+
           <CommandForm
-            accounts={data.accounts ?? []}
-            groups={data.groups ?? []}
+            accounts={accounts}
+            groups={groups}
             onQueued={() => setRefreshKey((value) => value + 1)}
           />
-          <CommandTimeline refreshKey={refreshKey} />
+
+          <CommandTimeline
+            commands={feed.commands}
+            loading={feed.loading}
+            error={feed.error}
+            setError={feed.setError}
+            load={feed.load}
+            localMode={Boolean(data?.localMode)}
+          />
+
+          <details className="overview">
+            <summary>
+              <span>Сводка и данные</span>
+              <span className="summary-tail" aria-hidden="true">
+                <span className="when-open">скрыть</span>
+                <span className="when-closed">показать</span>
+              </span>
+            </summary>
+            <div className="overview-body">
+              <SnapshotView data={data} now={now} />
+            </div>
+          </details>
+
+          <footer className="foot">
+            <span>
+              Обновлено {fetchedAt ? formatRelative(fetchedAt, now) : "—"} · автообновление раз в {REFRESH_MS / 1000} сек
+            </span>
+          </footer>
         </>
       )}
     </main>

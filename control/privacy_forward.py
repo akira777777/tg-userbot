@@ -69,11 +69,26 @@ class ForwardPrivacyManager:
         raise ValueError("нужно текст или файл для отправки")
 
     @staticmethod
-    def redact_log_line(line: str) -> str:
-        """Редакция строки лога: удаляет user_id, пути сессий, токены."""
+    def redact_log_line(line: str, *, max_len: int | None = 2000, keep_tail: bool = False) -> str:
+        """Редакция строки лога: удаляет user_id, пути сессий (POSIX и Windows), токены и ключи."""
         result = line
-        result = re.sub(r"\b\d{9,15}\b", "<user_id>", result)
-        result = re.sub(r"/[A-Za-z0-9_\-/]+\.session\b", "<session_file>", result)
-        result = re.sub(r"\b[A-Za-z0-9+/]{40,}={0,2}\b", "<token>", result)
+        result = re.sub(r"(?:API_ID(?:_\w+)?)\s*[=:]\s*\S+", "API_ID=***", result, flags=re.IGNORECASE)
+        result = re.sub(r"(?:API_HASH(?:_\w+)?)\s*[=:]\s*\S+", "API_HASH=***", result, flags=re.IGNORECASE)
+        result = re.sub(
+            r"(?:BOT_TOKEN|CONTROL_SESSION_SECRET|SUPABASE_(?:SECRET|SERVICE_ROLE)_KEY)\s*[=:]\s*\S+",
+            "<secret>=***",
+            result,
+            flags=re.IGNORECASE,
+        )
+        result = re.sub(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b", "<bot_token>", result)
         result = re.sub(r"sb_secret_\S+", "sb_secret=***", result)
-        return result[:2000]
+        result = re.sub(
+            r"(?:[A-Za-z]:)?(?:[\\/]?[^\\/\s'\"`]+[\\/])*[A-Za-z0-9_.\-]+\.session(?:-journal|-wal|-shm|\.unauth)?\b",
+            "<session_file>",
+            result,
+        )
+        result = re.sub(r"\b\d{9,15}\b", "<user_id>", result)
+        result = re.sub(r"\b[A-Za-z0-9+/]{40,}={0,2}\b", "<token>", result)
+        if max_len is None or len(result) <= max_len:
+            return result
+        return result[-max_len:] if keep_tail else result[:max_len]

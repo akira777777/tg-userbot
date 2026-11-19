@@ -1,84 +1,74 @@
 /**
- * Клиент-помощник для Telegram Web App.
- * Работает только в браузере после монтирования компонента.
+ * Клиентский помощник для Telegram Web App.
+ * SDK `@telegram-apps/sdk` (v2.x) экспортирует компоненты неймспейсами:
+ * `hapticFeedback.impactOccurred(...)`, `miniApp.ready()` и т.д.
+ * Все вызовы безопасны вне Telegram — там они просто ничего не делают.
  */
-import { init, ready, expand, MainButton, HapticFeedback, themeColor, popup } from '@telegram-apps/sdk';
+import { init, hapticFeedback, miniApp, viewport } from "@telegram-apps/sdk";
 
 let initialized = false;
 
-export function initTelegramWebApp() {
-  if (typeof window === 'undefined' || initialized) return;
+function call(fn) {
   try {
-    init();
-    ready();
-    expand();
-    initialized = true;
-  } catch (e) {
-    // Не браузер Telegram — продолжаем как обычный веб-сайт
-    console.warn('Telegram WebApp не доступен:', e.message);
+    return fn();
+  } catch {
+    return undefined;
   }
+}
+
+export function initTelegramWebApp() {
+  if (typeof window === "undefined" || initialized) return;
+  initialized = true;
+  call(() => init());
+  call(() => miniApp.ready?.());
+  call(() => viewport.expand?.());
+  call(() => miniApp.setHeaderColor?.("bg_color"));
+  call(() => miniApp.setBackgroundColor?.("bg_color"));
 }
 
 export function isTelegramWebApp() {
-  return typeof window !== 'undefined' && !!window.Telegram?.WebApp;
+  return typeof window !== "undefined" && Boolean(window.Telegram?.WebApp);
 }
 
-export function setMainButton(text, onClick, show = true) {
+/** Тактильный отклик. style: light | medium | heavy | rigid | soft. */
+export function hapticImpact(style = "light") {
   if (!isTelegramWebApp()) return;
-  try {
-    MainButton.setText(text);
-    MainButton.onClick(onClick);
-    if (show) MainButton.show();
-    else MainButton.hide();
-  } catch (e) {
-    console.warn('MainButton:', e.message);
-  }
+  call(() => hapticFeedback.impactOccurred(style));
+}
+
+/** Второй сигнал: "error" для ошибок, "success" для успеха. */
+export function hapticNotify(type = "success") {
+  if (!isTelegramWebApp()) return;
+  call(() => hapticFeedback.notificationOccurred(type));
 }
 
 export function showAlert(message) {
+  if (typeof window === "undefined") return;
   if (!isTelegramWebApp()) {
-    alert(message);
+    window.alert(message);
     return;
   }
   try {
-    popup.show(message, { type: 'alert' });
-  } catch (e) {
-    alert(message);
-  }
-}
-
-export function hapticImpact(style = 'light') {
-  if (!isTelegramWebApp()) return;
-  try {
-    HapticFeedback.impactOccurred({ type: style });
-  } catch (e) {
-    // ignored
-  }
-}
-
-export function getThemeColor(key) {
-  if (!isTelegramWebApp()) return null;
-  try {
-    return themeColor.get(key);
-  } catch (e) {
-    return null;
+    window.Telegram.WebApp.showAlert(message);
+  } catch {
+    window.alert(message);
   }
 }
 
 export function getInitData() {
-  if (!isTelegramWebApp()) return null;
+  if (typeof window === "undefined") return null;
   try {
-    return window.Telegram.WebApp.initData;
-  } catch (e) {
+    return window.Telegram?.WebApp?.initData || null;
+  } catch {
     return null;
   }
 }
 
 export function getInitDataUnsafe() {
-  if (!isTelegramWebApp()) return null;
+  if (typeof window === "undefined") return null;
   try {
-    return window.Telegram.WebApp.initDataUnsafe;
-  } catch (e) {
+    return window.Telegram?.WebApp?.initDataUnsafe || null;
+  } catch {
     return null;
   }
 }

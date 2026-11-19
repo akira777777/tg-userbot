@@ -9,10 +9,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import parse_qsl
+
+_HEX_64_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class TelegramAuthError(ValueError):
@@ -50,6 +53,8 @@ def verify_init_data(
             values[key] = value
     if not received_hash:
         raise TelegramAuthError("missing initData hash")
+    if not _HEX_64_RE.fullmatch(received_hash):
+        raise TelegramAuthError("invalid initData hash")
     data_check_string = "\n".join(f"{key}={values[key]}" for key in sorted(values))
     secret = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
     expected_hash = hmac.new(secret, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
