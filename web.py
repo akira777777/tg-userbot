@@ -222,6 +222,73 @@ async def _kill_tree(pid):
     return True
 
 
+_RESPAWN_DELAY_SECONDS = 30.0
+_RESPAWN_MAX_RESTARTS = 5
+_watch_restarts: dict[str, int] = {}
+_respawn_tasks: dict[str, "asyncio.Task"] = {}
+
+
+def _respawn_after(label: str, code: int | None, killed: bool, enabled: bool) -> float | None:
+    """Задержка автоперезапуска (с) или None.
+
+    Аварийно упавший watch (код != 0, не ручной стоп) поднимаем сами:
+    молча умершие воркеры = мёртвая система до утра. Выключается
+    переменной окружения WATCH_AUTORESTART=0.
+    """
+    if not enabled or killed or label != "watch":
+        return None
+    if code is None or code == 0:
+        return None
+    return _RESPAWN_DELAY_SECONDS
+
+
+def _drop_respawn_task(slot: str, task: "asyncio.Task"):
+    """Done-callback: убираем задачу из реестра, только если это та самая."""
+    if _respawn_tasks.get(slot) is task:
+        _respawn_tasks.pop(slot, None)
+
+
+def _cancel_respawn(slot: str):
+    """Отменяет отложенный респаун слота (ручной старт/стоп выигрывают).
+
+    Сама задача отменяется безопасно: она живёт только в окне ожидания
+    (sleep + регистрация под RUN_LOCK) и никогда не владеет процессом.
+    """
+    task = _respawn_tasks.get(slot)
+    if task is not None and not task.done():
+        task.cancel()
+    _respawn_tasks.pop(slot, None)
+
+
+async def _respawn_watch(delay: float, args, label, account, slot, extra_slots=None):
+    """Отложенный автоперезапуск упавшего watch (отменяемый).
+
+    Просыпается в окне ожидания. Если слот(ы) к этому моменту кто-то занял
+    (в т.ч. ручной старт) — выходим молча, ничего не трогая. Иначе
+    регистрируем запись BUS.jobs ровно как try_start и поднимаем процесс:
+    гард в run_job видит свою запись и не убивает спавн (дефект 1).
+    """
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        return
+    if os.environ.get("WATCH_AUTORESTART", "1") == "0":
+        return
+    slots = [slot] + [name for name in (extra_slots or []) if name != slot]
+    async with RUN_LOCK:
+        for name in slots:
+            if name in BUS.jobs:   # ручная задача или чужой слот — не мешаем
+                return
+        job = {"name": label, "args": args, "account": account,
+               "pid": None, "started": now_iso(), "proc": None, "kill": False}
+        for name in slots:
+            BUS.jobs[name] = job
+    # отдельная задача: сам respawn завершается сразу после регистрации,
+    # а его run_job живёт на собственной жизненной траектории — отменять
+    # respawn можно в любой момент окна, не задевая уже запущенный процесс.
+    asyncio.create_task(run_job(args, label, account, slot, extra_slots))
+
+
 async def run_job(args, label, account, slot, extra_slots=None):
     cmd = [PY, str(ROOT / "bot.py")] + args
     BUS.publish({"type": "job", "account": account,
@@ -262,6 +329,22 @@ async def run_job(args, label, account, slot, extra_slots=None):
         code = await proc.wait()
         BUS.publish({"type": "done", "account": account, "job": label,
                      "text": f"■ завершено ({label} @ {account}), код {code}"})
+        if code == 0:
+            _watch_restarts.pop(slot, None)
+        else:
+            delay = _respawn_after(label, code, bool(job and job.get("kill")),
+                                   os.environ.get("WATCH_AUTORESTART", "1") != "0")
+            if delay and _watch_restarts.get(slot, 0) < _RESPAWN_MAX_RESTARTS:
+                _watch_restarts[slot] = _watch_restarts.get(slot, 0) + 1
+                BUS.publish({"type": "job", "account": account, "job": label,
+                             "text": f"↻ {label} упал (код {code}) — перезапуск "
+                                     f"через {int(delay)} с"})
+                _cancel_respawn(slot)   # заменяем старый pending-респаун слота
+                task = asyncio.create_task(
+                    _respawn_watch(delay, args, label, account, slot, extra_slots))
+                _respawn_tasks[slot] = task
+                task.add_done_callback(
+                    lambda t, s=slot: _drop_respawn_task(s, t))
     except Exception as e:
         BUS.publish({"type": "done", "account": account, "job": label,
                      "text": f"■ сбой запуска ({type(e).__name__}: {e})"})
@@ -286,6 +369,8 @@ async def try_start(p: dict):
         for name in slots:
             if name in BUS.jobs:
                 return 409, {"error": f"занято: идёт «{BUS.jobs[name]['name']}» ({name})"}
+        for name in slots:
+            _cancel_respawn(name)   # ручной старт выигрывает у отложенного респауна
         if slot not in ("db", "conductor"):
             enabled, flooded = account_status(account)
             if not enabled:
@@ -423,10 +508,11 @@ async def api_stop(request):
     target = p.get("account")
     stopped = []
     if target == "all" or not target:
-        slots = list(BUS.jobs.keys())
+        slots = sorted(set(BUS.jobs) | set(_respawn_tasks))
     else:
         slots = [target]
     for slot in slots:
+        _cancel_respawn(slot)   # ручной стоп не должен дать респауну ожить
         job = BUS.jobs.get(slot)
         if not job:
             continue
@@ -435,6 +521,7 @@ async def api_stop(request):
             job["kill"] = True
             stopped.append(slot + " (отложено до старта)")
             continue
+        job["kill"] = True
         if await _kill_tree(job["pid"]):
             stopped.append(slot)
     if stopped:
