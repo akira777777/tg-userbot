@@ -1,5 +1,22 @@
-import { describe, expect, it } from "vitest";
-import { buildLocalSnapshot } from "../../lib/local-data";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const opens = vi.hoisted(() => ({ n: 0 }));
+
+vi.mock("node:sqlite", () => ({
+  DatabaseSync: class {
+    constructor() {
+      opens.n += 1;
+    }
+
+    prepare() {
+      return { all: () => [] };
+    }
+
+    close() {}
+  },
+}));
+
+import { buildLocalSnapshot, clearLocalSnapshotCache, loadLocalSnapshot, snapshotCacheFresh } from "../../lib/local-data";
 
 const SAMPLE = {
   accounts: [
@@ -50,5 +67,28 @@ describe("buildLocalSnapshot (локальный режим)", () => {
     expect(snapshot.accounts).toEqual([]);
     expect(snapshot.account_aliases).toEqual([]);
     expect(snapshot.groups).toEqual([]);
+  });
+});
+
+describe("loadLocalSnapshot cache", () => {
+  beforeEach(() => {
+    clearLocalSnapshotCache();
+    opens.n = 0;
+  });
+
+  it("считает кэш свежим только внутри 10 секунд", () => {
+    expect(snapshotCacheFresh({ at: 1_000 }, 10_999)).toBe(true);
+    expect(snapshotCacheFresh({ at: 1_000 }, 11_000)).toBe(false);
+    expect(snapshotCacheFresh(null, 11_000)).toBe(false);
+  });
+
+  it("не перечитывает members, пока снапшот моложе 10 секунд", async () => {
+    const first = await loadLocalSnapshot(1_000);
+    const second = await loadLocalSnapshot(1_000 + 9_999);
+    expect(second).toBe(first);
+    expect(opens.n).toBe(1);
+
+    await loadLocalSnapshot(1_000 + 10_000);
+    expect(opens.n).toBe(2);
   });
 });

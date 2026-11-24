@@ -1,5 +1,6 @@
 """Режим conduct both: сон до безопасного момента и границы очередей."""
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -13,9 +14,12 @@ os.environ["USERBOT_DB"] = str(Path(_tmp) / "t.db")
 os.environ["USERBOT_SESSIONS"] = str(Path(_tmp) / "sessions")
 
 from bot import (  # noqa: E402
+    DIALOG_REFRESH_SECONDS,
     assign_targets,
     both_should_continue,
+    dialog_refresh_mode,
     earliest_moment,
+    fanout,
     hold_dm_queue,
     next_channel,
     reassign_groups_on_flood,
@@ -99,6 +103,33 @@ def test_both_argv_has_no_time_window():
     assert slot == "conductor"
     assert "--window" not in argv
     assert "both" in argv
+
+
+def test_fanout_runs_several_accounts_together():
+    current = 0
+    peak = 0
+
+    async def worker(name):
+        nonlocal current, peak
+        current += 1
+        peak = max(peak, current)
+        await asyncio.sleep(0.05)
+        current -= 1
+        return name
+
+    async def main():
+        return await fanout(["a", "b", "c", "d"], worker, limit=3)
+
+    assert asyncio.run(main()) == ["a", "b", "c", "d"]
+    assert peak == 3
+
+
+def test_dialog_refresh_waits_once_then_goes_to_background():
+    assert dialog_refresh_mode(False, False, 0) == "wait"
+    assert dialog_refresh_mode(True, True, DIALOG_REFRESH_SECONDS) == "wait"
+    assert dialog_refresh_mode(True, False, DIALOG_REFRESH_SECONDS - 1) == "skip"
+    assert dialog_refresh_mode(True, False, DIALOG_REFRESH_SECONDS, inflight=True) == "skip"
+    assert dialog_refresh_mode(True, False, DIALOG_REFRESH_SECONDS) == "background"
 
 
 def test_both_dry_run_argv_keeps_kind_and_never_repeats():

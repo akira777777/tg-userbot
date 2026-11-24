@@ -108,6 +108,19 @@ export function buildLocalSnapshot(data) {
   };
 }
 
+/** Снапшот панели живёт 10 с: bootstrap и лента не пересчитывают members каждый опрос. */
+export const LOCAL_SNAPSHOT_TTL_MS = 10_000;
+
+const snapshotCache = new Map();
+
+export function snapshotCacheFresh(entry, now, ttl = LOCAL_SNAPSHOT_TTL_MS) {
+  return Boolean(entry) && Number.isFinite(entry.at) && now - entry.at < ttl;
+}
+
+export function clearLocalSnapshotCache() {
+  snapshotCache.clear();
+}
+
 /** Имена аккаунтов из локальной базы — для карты псевдонимов маршрутов. */
 export async function loadLocalAccountNames() {
   const db = new DatabaseSync(localDbPath(), { readOnly: true });
@@ -118,7 +131,7 @@ export async function loadLocalAccountNames() {
   }
 }
 
-export async function loadLocalSnapshot() {
+function readLocalSnapshot() {
   const db = new DatabaseSync(localDbPath(), { readOnly: true });
   try {
     const accounts = rows(db, "select name, enabled, daily_budget, broadcast_budget, flood_until, cohort, spam_strikes, last_peerflood_at, registered_at, added_at from accounts");
@@ -153,4 +166,13 @@ export async function loadLocalSnapshot() {
   } finally {
     db.close();
   }
+}
+
+export async function loadLocalSnapshot(now = Date.now()) {
+  const key = localDbPath();
+  const cached = snapshotCache.get(key);
+  if (snapshotCacheFresh(cached, now)) return cached.value;
+  const value = readLocalSnapshot();
+  snapshotCache.set(key, { at: now, value });
+  return value;
 }
