@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -75,3 +77,25 @@ def test_second_locker_cannot_take_busy_slot(tmp_path: Path) -> None:
     taken, after_release = asyncio.run(scenario())
     assert taken is False
     assert after_release is True
+
+
+def test_cross_process_slot_lock_blocks_second_process(tmp_path: Path) -> None:
+    """Межпроцессная блокировка работает и на Windows (msvcrt), и на POSIX (flock)."""
+    locker = SlotLocker(tmp_path)
+    probe = (
+        "import sys; from pathlib import Path; "
+        "from control.slots import SlotLocker; "
+        "lk = SlotLocker(Path(sys.argv[1])); "
+        "ok = lk.try_acquire_sync('main'); "
+        "lk.release_sync('main') if ok else None; "
+        "sys.exit(0 if ok else 3)"
+    )
+    assert locker.try_acquire_sync("main") is True
+    try:
+        busy = subprocess.run([sys.executable, "-c", probe, str(tmp_path)], check=False)
+        assert busy.returncode == 3
+    finally:
+        locker.release_sync("main")
+
+    free = subprocess.run([sys.executable, "-c", probe, str(tmp_path)], check=False)
+    assert free.returncode == 0

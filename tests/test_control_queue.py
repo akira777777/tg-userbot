@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-import pytest
-
 from control.config import ControlSettings
 from control.models import (
     BroadcastPayload,

@@ -148,3 +148,30 @@ def test_user_restricted_is_a_spam_signal_not_a_flood_wait():
     exc = UserRestrictedError(request=None)
     assert bot.send_error_class(exc) == "spam"
     assert bot.target_disposition(exc, "dm") == "halt_dm_queue"
+
+
+def test_accounts_registered_and_cohort_cli_update_dm_cap(isolated):
+    parser = bot.build_parser()
+    now = datetime(2026, 11, 19, tzinfo=timezone.utc)
+
+    args = parser.parse_args(["accounts", "registered", "main", "2024-01-15"])
+    bot._accounts_apply(isolated, args)
+    row = isolated.execute("SELECT registered_at FROM accounts WHERE name='main'").fetchone()
+    assert row["registered_at"] == "2024-01-15T00:00:00+00:00"
+    assert bot.account_dm_cap(isolated, "main", 100, now) == 60
+
+    args = parser.parse_args(["accounts", "cohort", "main", "fresh"])
+    bot._accounts_apply(isolated, args)
+    assert bot.account_dm_cap(isolated, "main", 100, now) == 15
+
+    args = parser.parse_args(["accounts", "cohort", "main", "auto"])
+    bot._accounts_apply(isolated, args)
+    assert bot.account_dm_cap(isolated, "main", 100, now) == 60
+
+    args = parser.parse_args(["accounts", "registered", "main", "clear"])
+    bot._accounts_apply(isolated, args)
+    assert "неизвестна" in bot.account_health(isolated, "main", now)
+
+    bad = parser.parse_args(["accounts", "registered", "main", "not-a-date"])
+    with pytest.raises(SystemExit):
+        bot._accounts_apply(isolated, bad)

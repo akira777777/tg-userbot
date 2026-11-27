@@ -98,9 +98,10 @@ backoff up to 30 days, targets are never handed to another account).
 
 - The daily DM cap is the **minimum** of the account budget and its cohort ceiling
   (fresh < 14 days: 15, warm < 90 days: 30, mature: 60, unknown: 20).
-- `accounts.registered_at` is filled from Telegram (`User.bot_registered`) on
-  `login`/`conduct`; `accounts.registered_at`, `cohort`, `spam_strikes` and
-  `last_peerflood_at` are the anti-spam columns.
+- `accounts.registered_at` and `accounts.cohort` are set via
+  `python bot.py accounts registered <name> YYYY-MM-DD` and
+  `python bot.py accounts cohort <name> auto|fresh|warm|mature` (Telethon `User` does not
+  expose account registration dates); `spam_strikes` and `last_peerflood_at` track `PEER_FLOOD`.
 - `status` and `accounts list` print a risk line per account (cohort, age, `PEER_FLOOD`
   strikes).
 - One account = one main MTProto session: never run two `conduct` workers on the same
@@ -161,9 +162,9 @@ Background, server error codes and safe-budget heuristics:
 4. Start the trusted local processes:
 
 ```bash
-python -m control main healthcheck
-python -m control main worker
-python -m control main telegram-bot
+python -m control.main healthcheck
+python -m control.main worker
+python -m control.main telegram-bot
 ```
 
 The worker must run where `userbot.db` and the authorized Telegram sessions are available.

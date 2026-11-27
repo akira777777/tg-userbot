@@ -37,75 +37,8 @@ except Exception:
     pass
 from pathlib import Path
 
-from telethon import TelegramClient
-from telethon.tl.types import Channel, Chat
-
 from control import orchestra  # планирование оркестра: профили, группы, гейты
 from control.slots import SlotLocker
-
-# Чистая математика и слой БД вынесены в tguserbot (ADR-0001, стадии 1–2b).
-# bot.py остаётся точкой входа и реэкспортирует имена для совместимости.
-from tguserbot.budget import account_cohort, cohort_budget  # noqa: F401 — реэкспорт
-from tguserbot.budget import trim_to_cap
-from tguserbot.db import db_call_retry, now_iso
-from tguserbot.db import connect as db_connect
-from tguserbot.db import migrate as db_migrate
-from tguserbot.repo import (
-    DM_ELIGIBLE_WHERE,
-    NOT_YET_DMED,        # noqa: F401 — реэкспорт для тестов
-    SCRAPE_CHUNK,
-    _MEMBER_COLUMNS,     # noqa: F401 — реэкспорт для тестов
-    _dm_candidate_ok,    # noqa: F401 — реэкспорт для тестов
-    _dm_excluded_users,  # noqa: F401 — реэкспорт для тестов
-    _fetch_rows,         # noqa: F401 — реэкспорт для тестов
-    account_age_days,    # noqa: F401 — реэкспорт для тестов
-    apply_write_edge,
-    candidate_ids,       # noqa: F401 — реэкспорт для тестов
-    dm_eligible_where,   # noqa: F401 — реэкспорт для тестов
-    dm_targets,
-    is_manually_blocked,
-    member_is_bot,       # noqa: F401 — реэкспорт для тестов
-    parse_registered_at,
-    persist_stop_request,
-    record_block,        # noqa: F401 — реэкспорт для тестов
-    record_edge,
-    record_reply,
-    refresh_group_flags,
-    register_media,
-    register_peerflood,
-    remember_permanent,
-    save_member,         # noqa: F401 — реэкспорт для тестов
-    save_members,
-    sync_account_age,    # noqa: F401 — реэкспорт для тестов
-    username_is_bot,
-)
-from tguserbot.reports import (
-    _campaign_ok_count,
-    account_dm_cap,
-    account_health,
-    campaign_report,
-    campaign_stats,
-    daily_cap,
-    delivery_report,
-    experiment_verdict,
-    message_id,
-    recent_ok_targets,
-    source_report,
-    today_broadcast_sent,
-    today_dm_sent,
-    today_sent,          # noqa: F401 — реэкспорт для тестов
-)
-from tguserbot.pacing import (
-    BOTH_SLEEP_CAP,
-    earliest_moment,
-    flood_pause_until,
-    flood_wait_seconds,  # noqa: F401 — реэкспорт для тестов
-    next_utc_midnight,
-    ordered_pause,
-    peerflood_backoff,  # noqa: F401 — реэкспорт для тестов
-    peerflood_pause_until,
-    wait_seconds,
-)
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("USERBOT_DB", ROOT / "userbot.db"))
@@ -167,22 +100,62 @@ def release_account_slots() -> None:
     _covered_slots.clear()
 
 
-def release_account_slot(account: str) -> None:
-    """Снять lock только этого аккаунта: ошибка get_client не должна
-    отпускать слоты уже подключённых игроков в cmd_conduct."""
-    key = (account or "main").strip().lower()
-    _covered_slots.discard(key)
-    if key not in _locked_slots:
-        return
-    if _slot_locker is not None:
-        try:
-            _slot_locker.release_sync(key)
-        except OSError:
-            pass
-    _locked_slots.discard(key)
-
-
 atexit.register(release_account_slots)
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS groups(
+  id INTEGER PRIMARY KEY,
+  title TEXT, username TEXT, gtype TEXT,
+  added_at TEXT, active INTEGER DEFAULT 1, in_broadcast INTEGER DEFAULT 1,
+  skip_reason TEXT, discovered_at TEXT
+);
+CREATE TABLE IF NOT EXISTS members(
+  user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, last_name TEXT,
+  is_bot INTEGER DEFAULT 0, collected_at TEXT, source_group INTEGER,
+  deleted INTEGER DEFAULT 0, access_hash INTEGER, dm_block TEXT
+);
+CREATE TABLE IF NOT EXISTS member_sources(
+  user_id INTEGER, group_id INTEGER, PRIMARY KEY(user_id, group_id)
+);
+CREATE TABLE IF NOT EXISTS campaigns(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, text TEXT, created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS sent(
+  campaign INTEGER, target TEXT, status TEXT, ts TEXT,
+  msg_id INTEGER,          -- id отправленного сообщения: основа ответа/доставки
+  replied_at TEXT,         -- человек ответил — единственный твёрдый сигнал «дошло»
+  blocked_at TEXT,         -- он нас заблокировал: сигнал «не надо»
+  PRIMARY KEY(campaign, target)
+);
+CREATE TABLE IF NOT EXISTS blacklist(
+  user_id INTEGER PRIMARY KEY, username TEXT, reason TEXT, ts TEXT
+);
+CREATE TABLE IF NOT EXISTS accounts(
+  name TEXT PRIMARY KEY, session TEXT, user_id INTEGER, api_id TEXT, api_hash TEXT,
+  enabled INTEGER DEFAULT 1, daily_budget INTEGER DEFAULT 30,
+  broadcast_budget INTEGER DEFAULT 15,
+  flood_until TEXT, note TEXT, added_at TEXT,
+  registered_at TEXT, cohort TEXT, spam_strikes INTEGER DEFAULT 0,
+  last_peerflood_at TEXT
+);
+CREATE TABLE IF NOT EXISTS account_groups(
+  account TEXT, group_id INTEGER, can_write INTEGER DEFAULT 1, seen_at TEXT,
+  PRIMARY KEY(account, group_id)
+);
+CREATE TABLE IF NOT EXISTS media(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  account TEXT, msg_id INTEGER, kind TEXT, title TEXT, mime TEXT,
+  size INTEGER, path TEXT, added_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ag_account ON account_groups(account);
+CREATE INDEX IF NOT EXISTS idx_ag_group ON account_groups(group_id);
+CREATE INDEX IF NOT EXISTS idx_sources_group ON member_sources(group_id);
+CREATE INDEX IF NOT EXISTS idx_sources_user ON member_sources(user_id);
+CREATE INDEX IF NOT EXISTS idx_sent_campaign ON sent(campaign);
+CREATE INDEX IF NOT EXISTS idx_sent_ts ON sent(ts);
+CREATE INDEX IF NOT EXISTS idx_campaigns_kind ON campaigns(kind);
+CREATE INDEX IF NOT EXISTS idx_members_bot ON members(is_bot);
+"""
 
 ENV = {}
 
@@ -201,18 +174,176 @@ def load_env():
             ENV[k] = os.environ[k]
 
 
+def now_iso():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+_SCHEMA_READY: set = set()
+
+
 def connect(migrate_schema=None):
-    """Реэкспорт-обёртка tguserbot.db.connect.
+    """Соединение с базой.
 
-    DB_PATH и LEGACY_SESSION читаются в момент вызова: скрипты и тесты
-    перезаписывают эти атрибуты после импорта bot (см. ADR-0001, стадия 2).
+    migrate_schema: True — гарантированно прогнать схему и миграцию. По
+    умолчанию — один раз на каждый файл базы в пределах процесса. Раньше connect()
+    делал migrate() при каждом вызове, а migrate() пишет в базу
+    (INSERT INTO accounts, ALTER, CREATE INDEX). Внутри cmd_conduct
+    get_client() открывает своё соединение, пока у вызывающего висит
+    незакоммиченная транзакция, — второе соединение на запись получало
+    «database is locked» и аккаунт молча выпадал из прогона.
     """
-    return db_connect(DB_PATH, migrate_schema=migrate_schema, main_session=LEGACY_SESSION)
+    base = Path(DB_PATH)
+    if migrate_schema is None:
+        # Один раз на конкретную базу, а не на процесс: тесты и `--db`
+        # подменяют DB_PATH, и каждой новой базе нужна своя схема.
+        migrate_schema = base not in _SCHEMA_READY
+    conn = sqlite3.connect(base, timeout=15)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")   # читаем из web.py параллельно с записью
+    conn.execute("PRAGMA busy_timeout=15000")
+    if migrate_schema:
+        try:
+            conn.executescript(SCHEMA)
+            migrate(conn)
+            _SCHEMA_READY.add(base)
+        except sqlite3.OperationalError:
+            # База занята другим процессом, который уже всё мигрировал:
+            # данных это не ломает, поэтому не выдаём себя за ошибку схемы.
+            conn.rollback()
+    return conn
 
 
-def migrate(conn, main_session=None):
-    """Реэкспорт-обёртка tguserbot.db.migrate: сессия «main» — из LEGACY_SESSION."""
-    return db_migrate(conn, LEGACY_SESSION if main_session is None else main_session)
+def db_call_retry(fn, *, attempts=6, first_delay=0.5, max_delay=8.0, sleep=time.sleep):
+    """Выполнить fn() с повтором, если SQLite занят другим процессом-воркером.
+
+    Несколько процессов `bot.py watch` пишут в одну базу; при долгой чужой
+    write-транзакции ожидание внутри busy_timeout может кончиться
+    'database is locked'. Записи-«стопы» и авторегистрация групп обязаны
+    это переживать. fn() должен быть идемпотентным (OR IGNORE / ON CONFLICT).
+    """
+    delay = first_delay
+    for attempt in range(attempts):
+        try:
+            return fn()
+        except sqlite3.OperationalError as exc:
+            text = str(exc).lower()
+            if "locked" not in text and "busy" not in text:
+                raise
+            if attempt == attempts - 1:
+                raise
+            sleep(delay + random.uniform(0, 0.15))
+            delay = min(delay * 2, max_delay)
+
+
+def _add_column(conn, table, column, ddl):
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+
+def migrate(conn):
+    """Идемпотентно: колонка account у кампаний/отправок + сид главного аккаунта."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(campaigns)")}
+    if "account" not in cols:
+        conn.execute("ALTER TABLE campaigns ADD COLUMN account TEXT DEFAULT 'main'")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(sent)")}
+    if "account" not in cols:
+        conn.execute("ALTER TABLE sent ADD COLUMN account TEXT DEFAULT 'main'")
+    _add_column(conn, "groups", "skip_reason", "TEXT")
+    _add_column(conn, "members", "deleted", "INTEGER DEFAULT 0")
+    _add_column(conn, "members", "access_hash", "INTEGER")
+    _add_column(conn, "members", "dm_block", "TEXT")
+    _add_column(conn, "accounts", "broadcast_budget", "INTEGER DEFAULT 15")
+    # Анти-спам: возраст аккаунта, контингент и счётчик PEER_FLOOD.
+    _add_column(conn, "accounts", "registered_at", "TEXT")
+    _add_column(conn, "accounts", "cohort", "TEXT")
+    _add_column(conn, "accounts", "spam_strikes", "INTEGER DEFAULT 0")
+    _add_column(conn, "accounts", "last_peerflood_at", "TEXT")
+    # Эффективность: ответ на конкретное сообщение и блокировка после доставки.
+    for col, ddl in (("msg_id", "INTEGER"), ("replied_at", "TEXT"), ("blocked_at", "TEXT")):
+        _add_column(conn, "sent", col, ddl)
+    # Частичный индекс: «был ли ответ» ищет по replied_at, а не сканом всем sent.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sent_msg_id ON sent(msg_id) "
+                 "WHERE msg_id IS NOT NULL")
+    # Оркестр: инвайт-ссылка приватной группы и статус общего набора групп.
+    _add_column(conn, "groups", "invite_link", "TEXT")
+    _add_column(conn, "groups", "join_status", "TEXT")
+    _add_column(conn, "groups", "gate_at", "TEXT")
+    _add_column(conn, "groups", "discovered_at", "TEXT")
+    # sent.account появляется только после ALTER, поэтому индекс нельзя
+    # создавать в первом проходе SCHEMA на уже существующей базе.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sent_account_status_ts ON sent(account, status, ts)"
+    )
+    # Покрывающий индекс для дедупа DM и агрегата кампаний. Колонки есть
+    # в исходной схеме, но индекс создаём здесь, рядом с остальными,
+    # чтобы старая база получила его тем же проходом, что и ALTER.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sent_campaign_status_target "
+        "ON sent(campaign, status, target)"
+    )
+    # deleted и dm_block появляются ALTER'ом выше. Частичный индекс повторяет
+    # фильтр очереди, поэтому ORDER BY collected_at не сортирует всю таблицу.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_members_dm_collected ON members(collected_at) "
+        "WHERE is_bot=0 AND COALESCE(deleted, 0)=0 AND COALESCE(dm_block, '')=''"
+    )
+    conn.execute("INSERT OR IGNORE INTO accounts(name,session,added_at) VALUES('main',?,?)",
+                 (LEGACY_SESSION, now_iso()))
+    conn.commit()
+
+
+def record_edge(conn, account, gid, can_write=None):
+    """Покрытие: аккаунт состоит в группе.
+
+    can_write=None не затирает права (их выставляет probe или явная классификация).
+    """
+    if can_write is None:
+        conn.execute("INSERT INTO account_groups(account,group_id,can_write,seen_at) "
+                     "VALUES(?,?,1,?) ON CONFLICT(account,group_id) DO UPDATE SET seen_at=excluded.seen_at",
+                     (account, gid, now_iso()))
+        return
+    conn.execute(
+        "INSERT INTO account_groups(account,group_id,can_write,seen_at) "
+        "VALUES(?,?,?,?) ON CONFLICT(account,group_id) DO UPDATE SET "
+        "seen_at=excluded.seen_at, can_write=excluded.can_write",
+        (account, gid, int(can_write), now_iso()))
+
+
+# Причины, при которых группу выключили ОСОЗНАННО: watch/--sync их не
+# отменяют. Иначе дежурный режим добавляет чат по первому же сообщению и
+# возвращает в рассылку то, что уже признали непригодным (отклоняет
+# перефорвард, платная, закрытая тема). Право записи тут ни при чём.
+BLOCKED_REASONS = ("forward_blocked", "payment", "topic_closed", "restricted",
+                   "client_chat")
+
+
+def is_manually_blocked(conn, gid):
+    row = conn.execute("SELECT skip_reason, active FROM groups WHERE id=?",
+                       (gid,)).fetchone()
+    if row is None:
+        return False
+    return (row["skip_reason"] in BLOCKED_REASONS) or not row["active"]
+
+
+def refresh_group_flags(conn, gid, reason):
+    """Группа в рассылке, если хоть один аккаунт может в неё писать.
+
+    Ручной стоп-лист сильнее автосинхронизации: выключенную группу
+    watch не возвращает, пока её не включат явно (groups enable).
+    """
+    row = conn.execute("SELECT skip_reason, active FROM groups WHERE id=?",
+                       (gid,)).fetchone()
+    if row is not None and (row["skip_reason"] in BLOCKED_REASONS or not row["active"]):
+        return
+    row = conn.execute(
+        "SELECT MAX(can_write) c FROM account_groups WHERE group_id=?", (gid,)).fetchone()
+    if row and row["c"]:
+        conn.execute("UPDATE groups SET in_broadcast=1, skip_reason='' WHERE id=?", (gid,))
+        return
+    conn.execute(
+        "UPDATE groups SET in_broadcast=0, skip_reason=? WHERE id=?",
+        (reason or "no_send", gid))
 
 
 def flood_guard(conn, account):
@@ -220,6 +351,116 @@ def flood_guard(conn, account):
     if row and row["flood_until"] and row["flood_until"] > now_iso():
         sys.exit(f"Аккаунт «{account}» в cooldown до {row['flood_until']} — "
                  f"подожди окончания паузы; ту же очередь другому аккаунту не передавай")
+
+
+def parse_registered_at(value):
+    """Нормализовать дату регистрации аккаунта (YYYY-MM-DD / ISO / unix ts) в UTC ISO."""
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("нужна дата в формате YYYY-MM-DD")
+    if raw.isdigit():
+        return datetime.fromtimestamp(int(raw), timezone.utc).isoformat(timespec="seconds")
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat(timespec="seconds")
+
+
+def sync_account_age(conn, account, registration_ts=None, now=None, *, overwrite=False):
+    """Сохранить дату регистрации аккаунта (unix ts или ISO-дату) и вернуть возраст в днях.
+
+    Telethon User не отдаёт дату регистрации обычного аккаунта, поэтому значение
+    задаётся явно (`accounts registered <name> YYYY-MM-DD`) или внешним источником.
+    При overwrite=False существующая дата не перезаписывается.
+    """
+    if not registration_ts:
+        return None
+    now = now or datetime.now(timezone.utc)
+    iso = parse_registered_at(registration_ts)
+    if overwrite:
+        conn.execute("UPDATE accounts SET registered_at=? WHERE name=?", (iso, account))
+    else:
+        conn.execute("UPDATE accounts SET registered_at=COALESCE(registered_at, ?) WHERE name=?",
+                     (iso, account))
+    return account_age_days(iso, now)
+
+
+def account_age_days(registered_at, now=None):
+    if not registered_at:
+        return None
+    now = now or datetime.now(timezone.utc)
+    try:
+        t = datetime.fromisoformat(str(registered_at))
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - t).total_seconds() / 86400)
+
+
+def account_dm_cap(conn, account, configured=None, now=None):
+    """Дневной потолок DM: явный бюджет аккаунта, но не выше потолка контингента.
+    Возраст берётся из accounts.registered_at; без даты — консервативный unknown."""
+    row = conn.execute("SELECT registered_at, cohort, daily_budget FROM accounts "
+                       "WHERE name=?", (account,)).fetchone()
+    if row is None:
+        return cohort_budget("unknown", configured)
+    age = account_age_days(row["registered_at"], now)
+    cohort = account_cohort(age, row["cohort"] or "auto")
+    base = configured if configured is not None else row["daily_budget"]
+    return cohort_budget(cohort, base)
+
+
+def account_health(conn, account, now=None):
+    """Однострочный индикатор риска аккаунта для status/accounts list."""
+    row = conn.execute("SELECT registered_at, cohort, COALESCE(spam_strikes,0) s, "
+                       "last_peerflood_at FROM accounts WHERE name=?", (account,)).fetchone()
+    if row is None:
+        return "нет в реестре"
+    now = now or datetime.now(timezone.utc)
+    age = account_age_days(row["registered_at"], now)
+    cohort = account_cohort(age, row["cohort"] or "auto")
+    parts = [COHORT_RU.get(cohort, cohort)]
+    if age is not None:
+        parts.append(f"{int(age)} дн")
+    if int(row["s"] or 0) > 0:
+        parts.append(f"PEER_FLOOD ×{int(row['s'])} (посл. {str(row['last_peerflood_at'] or '-')[:10]})")
+    return ", ".join(parts)
+
+
+def today_sent(conn, account, kind):
+    return conn.execute(
+        "SELECT COUNT(*) c FROM sent s JOIN campaigns c ON c.id=s.campaign "
+        "WHERE s.account=? AND s.status='ok' AND c.kind=? AND s.ts>=?",
+        (account, kind, now_iso()[:10] + "T00:00:00")).fetchone()["c"]
+
+
+def today_dm_sent(conn, account):
+    return today_sent(conn, account, "dm")
+
+
+def today_broadcast_sent(conn, account):
+    return today_sent(conn, account, "broadcast")
+
+
+def trim_to_cap(rows, cap, used):
+    """Обрезать выборку дневным потолком. cap=0 — без лимита, left=None."""
+    if not cap:
+        return list(rows), None
+    left = max(0, int(cap) - int(used))
+    return list(rows)[:left], left
+
+
+def daily_cap(conn, account, kind):
+    col = "daily_budget" if kind == "dm" else "broadcast_budget"
+    bud = conn.execute(f"SELECT {col} AS c FROM accounts WHERE name=?", (account,)).fetchone()  # nosec B608
+    if kind == "dm":
+        return account_dm_cap(conn, account, bud["c"] if bud else None)
+    if not bud or bud["c"] is None:
+        return 15
+    return bud["c"]
 
 
 def load_account_secrets():
@@ -301,13 +542,13 @@ def get_client(account="main", allow_flood=False):
     if not ACCOUNTS_RE.fullmatch(account):
         sys.exit("Некорректное имя аккаунта: a-z, 0-9, _ , - до 32 символов")
     hold_account_slot(account)
-    conn = None
     try:
         # Схему мигрирует точка входа процесса, а не фабрика клиента: get_client
         # зовут из cmd_conduct по кругу, пока там висит своя запись в базу.
         conn = connect(migrate_schema=False)
         row = conn.execute("SELECT * FROM accounts WHERE name=?", (account,)).fetchone()
         if row and not row["enabled"]:
+            conn.close()
             sys.exit(f"Аккаунт «{account}» отключён — bot.py accounts enable {account}")
         if row and not allow_flood:
             flood_guard(conn, account)
@@ -331,22 +572,17 @@ def get_client(account="main", allow_flood=False):
         api_id = stored.get("api_id") or _env_secret("API_ID") or ENV.get("API_ID")
         api_hash = stored.get("api_hash") or _env_secret("API_HASH") or ENV.get("API_HASH")
         conn.close()
-        conn = None
         if not api_id or not api_hash:
             sys.exit("Нет API_ID/API_HASH. Заведи приложение на my.telegram.org и "
                      "заполни .env (см. README.md).")
+        from telethon import TelegramClient
         p = Path(session)
         if not p.is_absolute():
             p = ROOT / p
         p.parent.mkdir(parents=True, exist_ok=True)
         return TelegramClient(str(p), int(api_id), api_hash)
-    except BaseException:
-        release_account_slot(account)
-        if conn is not None:
-            try:
-                conn.close()
-            except sqlite3.Error:
-                pass
+    except SystemExit:
+        release_account_slots()
         raise
 
 
@@ -417,6 +653,26 @@ def upsert_mailing_group(conn, account, ent):
     if not blocked:
         refresh_group_flags(conn, gid, why)
     return added, can, why
+
+
+def persist_stop_request(conn, user_id, username, *, attempts=8, first_delay=0.5,
+                         max_delay=8.0, sleep=time.sleep):
+    """«стоп» в DM -> blacklist. True = записан, False = база так и не освободилась."""
+    def _write():
+        conn.execute("INSERT OR IGNORE INTO blacklist(user_id,username,reason,ts) "
+                     "VALUES(?,?,?,?)",
+                     (user_id, username or "", "самоотписка в DM", now_iso()))
+        conn.commit()
+    try:
+        db_call_retry(_write, attempts=attempts, first_delay=first_delay,
+                      max_delay=max_delay, sleep=sleep)
+        return True
+    except sqlite3.OperationalError as exc:
+        conn.rollback()   # сброс частичной записи: не держим лок и не даём ей закоммититься позже
+        text = str(exc)
+        kind = "база была занята" if ("locked" in text.lower() or "busy" in text.lower()) else f"ошибка БД: {text}"
+        print(f"[blacklist] {user_id}: не записан ({kind})")
+        return False
 
 
 def persist_group_event(conn, account, chat, *, attempts=6, first_delay=0.5,
@@ -577,6 +833,186 @@ async def cmd_watch(args):
     await client.run_until_disconnected()
 
 
+def record_reply(conn, sender_id, chat_id=None, msg_id=None, text="", now=None):
+    """Человек ответил — единственный твёрдый сигнал «сообщение дошло».
+
+    Ищет нашу отправку этому человеку: сначала по reply на конкретное
+    сообщение, затем по свежей (последние 30 дней) отправке в этот чат.
+    Возвращает id записи sent или None, если ответили не на рассылку.
+    """
+    now = now or datetime.now(timezone.utc)
+    iso = now.isoformat(timespec="seconds")
+    uid = int(sender_id)
+    if msg_id:
+        row = conn.execute(
+            "SELECT s.rowid rid FROM sent s JOIN campaigns c ON c.id=s.campaign "
+            "WHERE s.msg_id=? AND c.kind='dm' AND s.replied_at IS NULL",
+            (int(msg_id),)).fetchone()
+        if row:
+            conn.execute("UPDATE sent SET replied_at=? WHERE rowid=?", (iso, row["rid"]))
+            return row["rid"]
+    cutoff = (now - timedelta(days=30)).isoformat(timespec="seconds")
+    row = conn.execute(
+        "SELECT s.rowid rid FROM sent s JOIN campaigns c ON c.id=s.campaign "
+        "WHERE s.target=? AND c.kind='dm' AND s.status='ok' AND s.replied_at IS NULL "
+        "AND s.ts>=? ORDER BY s.ts DESC LIMIT 1", (str(uid), cutoff)).fetchone()
+    if row:
+        conn.execute("UPDATE sent SET replied_at=? WHERE rowid=?", (iso, row["rid"]))
+        return row["rid"]
+    return None
+
+
+def record_block(conn, sender_id, now=None):
+    """Человек заблокировал нас: помечаем последнюю доставку и выводим из базы."""
+    now = now or datetime.now(timezone.utc)
+    iso = now.isoformat(timespec="seconds")
+    conn.execute("UPDATE sent SET blocked_at=? WHERE rowid=("
+                 "SELECT s.rowid FROM sent s JOIN campaigns c ON c.id=s.campaign "
+                 "WHERE s.target=? AND c.kind='dm' AND s.status='ok' "
+                 "ORDER BY s.ts DESC LIMIT 1)", (iso, str(int(sender_id))))
+    conn.execute("UPDATE members SET dm_block='user_blocked' WHERE user_id=? "
+                 "AND COALESCE(dm_block,'')=''", (int(sender_id),))
+
+
+def delivery_report(conn, days=7, now=None):
+    """Что на самом деле дала рассылка: принято, дошло, заблокировали.
+
+    reply  — человек ответил на наше сообщение (доставка доказуема);
+    blocked — после доставки заблокировал (тоже доказуемо, но со знаком минус);
+    silent — принято Telegram, реакции нет; про такое нельзя сказать «доставлено».
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    rows = conn.execute(
+        "SELECT c.kind kind, COUNT(*) total,"
+        " SUM(CASE WHEN s.status='ok' THEN 1 ELSE 0 END) accepted,"
+        " SUM(CASE WHEN s.replied_at IS NOT NULL THEN 1 ELSE 0 END) replied,"
+        " SUM(CASE WHEN s.blocked_at IS NOT NULL THEN 1 ELSE 0 END) blocked,"
+        " SUM(CASE WHEN s.status LIKE 'fail:%' THEN 1 ELSE 0 END) failed"
+        " FROM sent s JOIN campaigns c ON c.id=s.campaign WHERE s.ts>=? "
+        "GROUP BY c.kind ORDER BY c.kind", (cutoff,)).fetchall()
+    out = []
+    for r in rows:
+        accepted = r["accepted"] or 0
+        replied = r["replied"] or 0
+        blocked = r["blocked"] or 0
+        out.append({
+            "kind": r["kind"], "total": r["total"],
+            "accepted": accepted, "replied": replied, "blocked": blocked,
+            "failed": r["failed"] or 0,
+            "silent": max(0, accepted - replied - blocked),
+            "reply_rate": (100.0 * replied / accepted) if accepted else 0.0,
+            "block_rate": (100.0 * blocked / accepted) if accepted else 0.0,
+        })
+    return out
+
+
+def campaign_report(conn, days=30, now=None, min_sample=1):
+    """Разрез по кампаниям: что реально дало ответы, а что сожгло пул.
+
+    Отвечает на вопрос «какой оффер работает», а не «сколько мы отправили»:
+    reply_rate и block_rate считаются по принятым отправкам, а не по плану.
+    Кампании с сэмплом меньше min_sample помечаются как «мало данных».
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    rows = conn.execute(
+        "SELECT c.id id, c.kind kind, c.account account, c.created_at created_at, "
+        "       c.text text,"
+        "       COUNT(*) total,"
+        "       SUM(CASE WHEN s.status='ok' THEN 1 ELSE 0 END) accepted,"
+        "       SUM(CASE WHEN s.replied_at IS NOT NULL THEN 1 ELSE 0 END) replied,"
+        "       SUM(CASE WHEN s.blocked_at IS NOT NULL THEN 1 ELSE 0 END) blocked,"
+        "       SUM(CASE WHEN s.status LIKE 'fail:%' THEN 1 ELSE 0 END) failed "
+        "FROM campaigns c JOIN sent s ON s.campaign=c.id "
+        "WHERE s.ts>=? GROUP BY c.id ORDER BY c.created_at DESC",
+        (cutoff,)).fetchall()
+    out = []
+    for r in rows:
+        accepted = r["accepted"] or 0
+        replied = r["replied"] or 0
+        blocked = r["blocked"] or 0
+        out.append({
+            "id": r["id"], "kind": r["kind"], "account": r["account"],
+            "created_at": r["created_at"],
+            "preview": (r["text"] or "").replace("\n", " ")[:60],
+            "total": r["total"], "accepted": accepted, "replied": replied,
+            "blocked": blocked, "failed": r["failed"] or 0,
+            "silent": max(0, accepted - replied - blocked),
+            "reply_rate": (100.0 * replied / accepted) if accepted else 0.0,
+            "block_rate": (100.0 * blocked / accepted) if accepted else 0.0,
+            "low_confidence": accepted < min_sample,
+        })
+    return out
+
+
+def source_report(conn, days=30, now=None, min_sample=1):
+    """Разрез по группам-источникам: откуда пришли те, кто отвечает.
+
+    Люди собираются из групп (members.source_group), поэтому именно источник
+    показывает, какая аудитория живая. Для групп, где человек состоит в
+    нескольких, берётся основной source_group участника — без размножения
+    одной отправки на несколько источников.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    rows = conn.execute(
+        "SELECT COALESCE(m.source_group, 0) gid,"
+        "       COALESCE(g.title, '(без источника)') title,"
+        "       COUNT(*) total,"
+        "       SUM(CASE WHEN s.status='ok' THEN 1 ELSE 0 END) accepted,"
+        "       SUM(CASE WHEN s.replied_at IS NOT NULL THEN 1 ELSE 0 END) replied,"
+        "       SUM(CASE WHEN s.blocked_at IS NOT NULL THEN 1 ELSE 0 END) blocked "
+        "FROM sent s JOIN campaigns c ON c.id=s.campaign "
+        "LEFT JOIN members m ON c.kind='dm' AND m.user_id=CAST(s.target AS INTEGER) "
+        "LEFT JOIN groups g ON g.id=m.source_group "
+        "WHERE s.ts>=? GROUP BY COALESCE(m.source_group, 0)",
+        (cutoff,)).fetchall()
+    out = []
+    for r in rows:
+        accepted = r["accepted"] or 0
+        replied = r["replied"] or 0
+        blocked = r["blocked"] or 0
+        out.append({
+            "group_id": r["gid"], "title": r["title"],
+            "total": r["total"], "accepted": accepted, "replied": replied,
+            "blocked": blocked,
+            "reply_rate": (100.0 * replied / accepted) if accepted else 0.0,
+            "block_rate": (100.0 * blocked / accepted) if accepted else 0.0,
+            "low_confidence": accepted < min_sample,
+        })
+    out.sort(key=lambda x: (-x["reply_rate"], -x["accepted"]))
+    return out
+
+
+def experiment_verdict(campaigns, min_sample=10):
+    """Что делать дальше — по данным, а не по ощущению.
+
+    no_data    — мало принятых: расширять выборку бессмысленно, сначала объём;
+    stop_copy  — ответов нет ни на одной кампании: проблема в тексте/аудитории;
+    scale_winner — есть кампания с ответами: увеличивать именно её;
+    mixed      — данные есть, но разница в пределах шума.
+    """
+    with_data = [c for c in campaigns if c["accepted"] >= min_sample]
+    if not with_data:
+        return "no_data"
+    best = max(with_data, key=lambda c: c["reply_rate"])
+    if all(c["replied"] == 0 for c in with_data):
+        return "stop_copy"
+    if best["reply_rate"] >= 5.0:
+        return "scale_winner"
+    return "mixed"
+
+
+def username_is_bot(username):
+    """Ник Telegram-бота обязан заканчиваться на bot. Имена вроде Subbotina и Rabota — нет."""
+    return bool(username) and str(username).lower().endswith("bot")
+
+
+def member_is_bot(u):
+    return int(bool(getattr(u, "bot", False)) or username_is_bot(getattr(u, "username", None)))
+
+
 # --- отсев «твинков» и очевидных ботов в личной рассылке ---------------------
 # Правила собраны по реальной базе: накрученные/автогенерированные ники,
 # рекламные имена и аккаунты-пустышки. Сомнительная цель пропускается, а не
@@ -724,6 +1160,18 @@ SPAM_ERRORS = {
 ACCOUNT_FLOOD_ERRORS = {"FloodWaitError", "FloodPremiumWaitError"}
 # Право ограниченного аккаунта писать незнакомцам теряет вся серия DM (FAQ: 24 ч × 2^n),
 # даже если технический FloodWait давно истёк.
+FLOOD_JITTER = 1.15          # 15% сверху к серверной паузе, чтобы не биться синхронно
+
+# Бюджет DM по возрасту аккаунта (не официальный лимит Telegram, а эвристика
+# из docs/telegram/limits-and-antispam.md). Ключ — code из account_cohort.
+COHORT_BUDGET = {"fresh": 15, "warm": 30, "mature": 60, "unknown": 20}
+COHORT_RU = {
+    "fresh": "свежий (<2 недель)",
+    "warm": "прогретый (2 недели — 3 месяца)",
+    "mature": "зрелый (>3 месяцев)",
+    "unknown": "дата регистрации неизвестна",
+}
+
 PERMANENT_DM = {
     "UserPrivacyRestrictedError": "privacy",
     "UserIsBlockedError": "user_blocked",
@@ -841,6 +1289,84 @@ def target_disposition(exc, kind):
     return "fail"
 
 
+def flood_pause_until(exc, now=None):
+    """Пауза на число секунд от сервера (+15% jitter). Минимум 1 с."""
+    now = now or datetime.now(timezone.utc)
+    return (now + timedelta(seconds=flood_wait_seconds(exc))).isoformat(timespec="seconds")
+
+
+def flood_wait_seconds(exc, jitter=None):
+    """Сколько реально спать после FloodWait: секунды сервера + jitter.
+    Минимум 1 с, чтобы не крутить пустой цикл."""
+    try:
+        seconds = int(getattr(exc, "seconds", 0) or 0)
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds < 1:
+        seconds = 1
+    factor = FLOOD_JITTER if jitter is None else max(1.0, float(jitter))
+    # Округление вверх: пауза никогда не короче серверной, 100 с → 115 с.
+    return min(math.ceil(seconds * factor), 86400)
+
+
+def peerflood_backoff(strikes):
+    """Пауза после PEER_FLOOD. Первый раз — сутки, дальше экспоненциально,
+    с потолком 30 дней: «повторные нарушения — дольше, упорство — навсегда»."""
+    n = max(1, int(strikes or 1))
+    hours = min(24 * (2 ** (n - 1)), 24 * 30)
+    return timedelta(hours=hours)
+
+
+def peerflood_pause_until(strikes=1, now=None):
+    now = now or datetime.now(timezone.utc)
+    return (now + peerflood_backoff(strikes)).isoformat(timespec="seconds")
+
+
+def account_cohort(age_days, config_cohort="auto"):
+    """Контингент аккаунта по возрасту: fresh | warm | mature | unknown."""
+    if config_cohort and config_cohort != "auto":
+        return config_cohort
+    if age_days is None:
+        return "unknown"
+    try:
+        days = float(age_days)
+    except (TypeError, ValueError):
+        return "unknown"
+    if days < 14:
+        return "fresh"
+    if days < 90:
+        return "warm"
+    return "mature"
+
+
+def cohort_budget(cohort, base=None):
+    """Бюджет DM на сутки. Явный бюджет аккаунта не понижает, но не поднимает
+    выше потолка контингента: age не обходится флагом CLI."""
+    cap = COHORT_BUDGET.get(cohort, COHORT_BUDGET["unknown"])
+    if base is None or int(base) <= 0:
+        return cap
+    return min(int(base), cap)
+
+
+def ordered_pause(delay_min, delay_max):
+    """Пара паузы для random.uniform. Перепутанные границы меняются местами."""
+    lo = float(delay_min or 0)
+    hi = float(delay_max or 0)
+    if lo < 0:
+        lo = 0.0
+    if hi < 0:
+        hi = 0.0
+    if hi > 0 and lo > hi:
+        lo, hi = hi, lo
+    return lo, hi
+
+
+def apply_write_edge(conn, account, gid, can, why):
+    """Записать право писать и заново решить, остаётся ли группа в рассылке."""
+    record_edge(conn, account, gid, can_write=1 if can else 0)
+    refresh_group_flags(conn, gid, "" if can else (why or "no_send"))
+
+
 def handoff_broadcast(row, name, players, edges):
     """Кому отдать группу, если name уже не может писать. None — отдать некому."""
     gid = row["id"]
@@ -855,121 +1381,46 @@ def handoff_broadcast(row, name, players, edges):
     return None
 
 
+BOTH_SLEEP_CAP = 30
 DIALOG_REFRESH_SECONDS = 15 * 60
 DM_MIN_GAP = 20.0
 GROUP_PAUSE = (3.0, 8.0)
 DM_PAUSE = (20.0, 45.0)
-# Не открывать все сессии одним залпом: три одновременных запроса к Telegram.
-ACCOUNT_FANOUT = 3
 _LINK_ERRORS = {
     "ConnectionError", "ConnectionResetError", "TimeoutError",
     "ServerError", "IncompleteReadError", "ConnectionErrorError",
 }
 
 
-async def fanout(items, worker, limit=ACCOUNT_FANOUT):
-    """Выполнить worker по элементам параллельно, не больше limit за раз.
-
-    Порядок результатов совпадает с items. Так несколько аккаунтов
-    подключаются и качают диалоги вместе, а не ждут друг друга по очереди.
-    """
-    cap = max(1, int(limit))
-    sem = asyncio.Semaphore(cap)
-
-    async def run(item):
-        async with sem:
-            return await worker(item)
-
-    return await asyncio.gather(*(run(item) for item in items))
-
-
-def dialog_refresh_mode(has_map, dry_run, age_seconds, *, refresh_seconds=None, inflight=False):
-    """Как обновить диалоги: wait, background или skip.
-
-    Первая карта и сухой прогон ждут ответа: без покрытия нечего раскладывать.
-    Дальше протухшая карта дочитывается в фоне, живая и уже идущая — пропускаются.
-    """
-    window = DIALOG_REFRESH_SECONDS if refresh_seconds is None else refresh_seconds
-    if not has_map or dry_run:
-        return "wait"
-    if inflight or age_seconds < window:
-        return "skip"
-    return "background"
-
-
-async def _open_conduct_account(name):
-    """Поднять сессию. Ошибку вернуть, не бросать: соседние аккаунты не ждут её.
-
-    Базу здесь не пишем. Вызывающий собирает user_id и бюджеты одним куском,
-    без await между execute и commit.
-    """
-    client = None
-    try:
-        client = get_client(name, allow_flood=True)
-        await client.connect()
-        if not await client.is_user_authorized():
-            print(f"  пропуск «{name}»: сессия не авторизована — login --account {name}")
-            await client.disconnect()
-            return name, None, None
-        me = await client.get_me()
-        return name, client, me
-    except SystemExit as exc:
-        if client is not None:
+def earliest_moment(now, deadlines):
+    """Ближайший момент в будущем. None, если ждать нечего."""
+    future = []
+    for item in deadlines:
+        if not item:
+            continue
+        if isinstance(item, str):
             try:
-                await client.disconnect()
-            except Exception:
-                pass
-        print(f"  пропуск «{name}»: {exc}")
-        return name, None, None
-    except Exception as exc:
-        if client is not None:
-            try:
-                await client.disconnect()
-            except Exception:
-                pass
-        print(f"  пропуск «{name}»: {type(exc).__name__}: {str(exc)[:80]}")
-        return name, None, None
+                item = datetime.fromisoformat(item)
+            except ValueError:
+                continue
+        if item.tzinfo is None:
+            item = item.replace(tzinfo=timezone.utc)
+        if item > now:
+            future.append(item)
+    return min(future) if future else None
 
 
-async def _load_account_dialogs(item):
-    """Диалоги одного аккаунта. Сеть здесь, запись покрытия — у вызывающего."""
-    name, player = item
-    if not player["client"].is_connected():
-        await player["client"].connect()
-    return name, await player["client"].get_dialogs()
+def next_utc_midnight(now):
+    now = now.astimezone(timezone.utc)
+    nxt = now.date() + timedelta(days=1)
+    return datetime(nxt.year, nxt.month, nxt.day, tzinfo=timezone.utc)
 
 
-def store_dialog_coverage(conn, name, dialogs, *, dry_run, edges, emaps):
-    """Записать покрытие одного аккаунта. Без await: вызывающий коммитит пачкой.
-
-    Сухой прогон не возвращает чат в рассылку: record_edge не затирает can_write=0.
-    Уже существующий набор edges[name] обновляется на месте, чтобы discard
-    воркера не потерялся на старой копии, пока карта подменяется в фоне.
-    """
-    emap = {
-        dialog.entity.id: dialog.entity
-        for dialog in dialogs
-        if isinstance(dialog.entity, (Chat, Channel))
-    }
-    emaps[name] = emap
-    writable = set()
-    for gid, ent in emap.items():
-        can, why = classify_broadcast(ent)
-        if can:
-            writable.add(gid)
-            if dry_run:
-                record_edge(conn, name, gid)
-            else:
-                apply_write_edge(conn, name, gid, True, "")
-        else:
-            apply_write_edge(conn, name, gid, False, why)
-    current = edges.get(name)
-    if current is None:
-        edges[name] = writable
-    else:
-        current.clear()
-        current.update(writable)
-    print(f"  покрытие «{name}»: диалогов {len(emap)}, можно писать {len(writable)}")
+def wait_seconds(now, moment, cap=BOTH_SLEEP_CAP):
+    """Сколько спать до момента, но не дольше cap: так Стоп замечается без долгой паузы."""
+    if moment is None:
+        return float(cap)
+    return max(0.0, min(float(cap), (moment - now).total_seconds()))
 
 
 def reassign_groups_on_flood(name, pending, players, edges):
@@ -1027,6 +1478,147 @@ def channel_open(player, kind, now=None):
     if not cap:
         return True
     return int(used or 0) < int(cap)
+
+
+def register_peerflood(conn, account, now=None):
+    """PEER_FLOOD засчитывается аккаунту: +1 страйк и backoff от числа страйков.
+    Чистые дни без спама снимают страйки (см. decay_peerflood)."""
+    now = now or datetime.now(timezone.utc)
+    cur = conn.execute("SELECT COALESCE(spam_strikes, 0) s FROM accounts WHERE name=?",
+                       (account,)).fetchone()
+    strikes = int((cur["s"] if cur else 0) or 0) + 1
+    fu = peerflood_pause_until(strikes, now)
+    try:
+        conn.execute("UPDATE accounts SET spam_strikes=?, last_peerflood_at=?, flood_until=? "
+                     "WHERE name=?", (strikes, now.isoformat(timespec="seconds"), fu, account))
+    except sqlite3.OperationalError:
+        # Старая схема без колонок — пауза всё равно важнее счётчика.
+        conn.execute("UPDATE accounts SET flood_until=? WHERE name=?", (fu, account))
+    return strikes
+
+
+def remember_permanent(conn, kind, key, reason, account=None):
+    """Постоянный отказ больше не попадает в очередь."""
+    if kind == "dm":
+        conn.execute(
+            "UPDATE members SET dm_block=? WHERE user_id=? AND COALESCE(dm_block, '')=''",
+            (reason, int(key)))
+        if reason == "deleted":
+            conn.execute("UPDATE members SET deleted=1 WHERE user_id=?", (int(key),))
+        return
+    gid = int(key)
+    if account:
+        conn.execute(
+            "UPDATE account_groups SET can_write=0, seen_at=? WHERE account=? AND group_id=?",
+            (now_iso(), account, gid))
+    refresh_group_flags(conn, gid, reason)
+
+
+def dm_eligible_where(repeat_ok=False):
+    """Предикат очереди новых DM. repeat_ok снимает только дедуп прошлых успешных DM."""
+    parts = [
+        "m.is_bot=0",
+        "LOWER(COALESCE(m.username, '')) NOT LIKE '%bot'",
+        "COALESCE(m.deleted, 0)=0",
+        "(COALESCE(m.username, '') != '' OR m.access_hash IS NOT NULL)",
+        "COALESCE(m.dm_block, '')=''",
+        "m.user_id NOT IN (SELECT user_id FROM blacklist)",
+        "m.user_id NOT IN (SELECT user_id FROM accounts WHERE user_id IS NOT NULL)",
+        # Твинки и очевидный мусор: та же логика, что в member_username_is_twin /
+        # member_name_is_junk, но в SQL, чтобы отсекалось до выборки в Python.
+        "COALESCE(m.username, '') NOT GLOB '*[0-9][0-9][0-9][0-9]'",
+        "COALESCE(m.first_name, '') NOT GLOB '*@[A-Za-z0-9_]*[bB][oO][tT]*'",
+        "COALESCE(m.first_name, '') NOT GLOB '*[tT].[mM][eE]/*'",
+        "LOWER(COALESCE(m.first_name, '')) NOT LIKE '%age app%'",
+        "LOWER(COALESCE(m.first_name, '')) NOT LIKE '%поддержк%'",
+        "LOWER(COALESCE(m.first_name, '')) NOT LIKE '%support%'",
+        "LOWER(COALESCE(m.first_name, '')) NOT LIKE '%casino%'",
+        "LOWER(COALESCE(m.first_name, '')) NOT LIKE '%crypto%'",
+    ]
+    if not repeat_ok:
+        # CAST остаётся: цель «05» всё ещё исключает user_id 5.
+        # Обход с campaigns.kind использует idx_campaigns_kind и
+        # idx_sent_campaign_status_target вместо полного скана sent.
+        parts.append(
+            "m.user_id NOT IN (SELECT CAST(s.target AS INTEGER) FROM campaigns c "
+            "JOIN sent s ON s.campaign=c.id AND s.status='ok' WHERE c.kind='dm')"
+        )
+    return " AND ".join(parts)
+
+
+# Тот же предикат, что у dmsend по умолчанию: status и панель считают одну очередь.
+DM_ELIGIBLE_WHERE = dm_eligible_where(False)
+NOT_YET_DMED = (
+    "NOT EXISTS (SELECT 1 FROM sent s JOIN campaigns c ON c.id=s.campaign "
+    "WHERE c.kind='dm' AND s.status='ok' AND s.target=CAST(m.user_id AS TEXT))"
+)
+
+
+_MEMBER_INSERT = (
+    "INSERT OR IGNORE INTO members(user_id,username,first_name,last_name,is_bot,collected_at,"
+    "source_group,deleted,access_hash) VALUES(?,?,?,?,?,?,?,?,?)"
+)
+SCRAPE_CHUNK = 500
+
+
+def save_members(conn, users, gid):
+    """Пакетная вставка участников одной группы. Коммит остаётся на вызывающем.
+
+    Возвращает число новых строк members. Повторный scrape не переписывает
+    ник, имена, collected_at и source_group. is_bot и deleted только
+    поднимаются в 1, access_hash пишется, когда новое значение не None.
+    """
+    if not users:
+        return 0
+    collected_at = now_iso()
+    rows = []
+    bot_ids = []
+    deleted_ids = []
+    hashes = []
+    sources = []
+    for user in users:
+        uname = user.username or ""
+        is_bot = member_is_bot(user)
+        deleted = int(bool(getattr(user, "deleted", False)))
+        access_hash = getattr(user, "access_hash", None)
+        if access_hash is not None:
+            access_hash = int(access_hash)
+        rows.append((
+            user.id, uname, user.first_name or "", user.last_name or "", is_bot,
+            collected_at, gid, deleted, access_hash,
+        ))
+        if is_bot:
+            bot_ids.append((user.id,))
+        if deleted:
+            deleted_ids.append((user.id,))
+        if access_hash is not None:
+            hashes.append((access_hash, user.id, access_hash))
+        sources.append((user.id, gid))
+    before = conn.total_changes
+    conn.executemany(_MEMBER_INSERT, rows)
+    new_count = conn.total_changes - before
+    # INSERT OR IGNORE не обновляет уже существующую строку — иначе ник *bot
+    # навсегда остаётся is_bot=0, если первый scrape записал его человеком.
+    if bot_ids:
+        conn.executemany(
+            "UPDATE members SET is_bot=1 WHERE user_id=? AND COALESCE(is_bot, 0)=0",
+            bot_ids)
+    if deleted_ids:
+        conn.executemany(
+            "UPDATE members SET deleted=1 WHERE user_id=? AND COALESCE(deleted, 0)=0",
+            deleted_ids)
+    if hashes:
+        conn.executemany(
+            "UPDATE members SET access_hash=? WHERE user_id=? AND access_hash IS NOT ?",
+            hashes)
+    conn.executemany(
+        "INSERT OR IGNORE INTO member_sources(user_id,group_id) VALUES(?,?)",
+        sources)
+    return new_count
+
+
+def save_member(conn, u, gid):
+    return save_members(conn, [u], gid)
 
 
 async def cmd_scrape(args):
@@ -1098,6 +1690,161 @@ async def cmd_scrape(args):
     print(f"Готово: собрано {total} новых (всего в базе: {all_m})", flush=True)
 
 
+# Строка members в том виде, в каком её отдают план и dm_targets: тот же набор
+# полей и тот же доступ по ключу, что у sqlite3.Row из SELECT m.*.
+_MEMBER_COLUMNS = ("user_id", "username", "first_name", "last_name", "is_bot",
+                   "collected_at", "source_group", "deleted", "access_hash", "dm_block")
+
+# Отсеваемые слова в имени: пять NOT LIKE '%слово%' из dm_eligible_where.
+# В SQL каждое — отдельный вызов LOWER, а LOWER в SQLite не встроенная функция:
+# эти проверки на 12.5 тыс. строк стоили дороже чтения всей таблицы.
+# Тот же набор слов здесь — одно регулярное выражение.
+_NAME_JUNK_RE = re.compile(r"age app|поддержк|support|casino|crypto")
+
+
+def _lower_like_sqlite(value):
+    """Нижний регистр ровно как у SQLite LOWER: меняются только ASCII-буквы."""
+    if value.isascii():
+        return value.lower()
+    return "".join(ch.lower() if ch.isascii() else ch for ch in value)
+
+
+def _name_junk(first_name):
+    """То же, что LOWER(first_name) NOT LIKE '%<слово>%' в dm_eligible_where."""
+    if not first_name:
+        return False
+    return _NAME_JUNK_RE.search(_lower_like_sqlite(first_name)) is not None
+
+
+def _dm_candidate_ok(row):
+    """Python-половина очереди DM для строки (user_id, username, first_name, access_hash).
+
+    Повторяет ровно те условия dm_eligible_where, которые не проверяет ни
+    индекс, ни встроенные NOT GLOB из _CANDIDATE_SQL. Именно они дорого
+    стоили в SQL: LOWER(COALESCE(username,'')) NOT LIKE '%bot' и пять
+    LOWER(first_name) LIKE-подстрок. Имена вроде 'Rabota' и 'Subbotina'
+    остаются, ники на '...bot' отсекаются регистронезависимо.
+    """
+    username = row[1] or ""
+    if username:
+        if _lower_like_sqlite(username).endswith("bot"):
+            return False
+    elif row[3] is None:          # (username != '' OR access_hash IS NOT NULL)
+        return False
+    return not _name_junk(row[2] or "")
+
+
+def _dm_excluded_users(conn, repeat_ok=False):
+    """Цели, которых не должно быть в очереди: чёрный список, свои аккаунты,
+    прошлые успешные DM.
+
+    Раньше это были три NOT IN-подзапроса, которые SQLite пересчитывал на
+    каждой строке members (36 строк sent — но 12 500 проверок). Набор — сотни
+    id, поэтому сверка по множеству в Python дешевле и читается проще.
+    """
+    excluded = {row[0] for row in conn.execute(
+        "SELECT user_id FROM accounts WHERE user_id IS NOT NULL")}
+    excluded |= {row[0] for row in conn.execute("SELECT user_id FROM blacklist")}
+    if not repeat_ok:
+        excluded |= {row[0] for row in conn.execute(
+            "SELECT CAST(s.target AS INTEGER) FROM campaigns c "
+            "JOIN sent s ON s.campaign=c.id AND s.status='ok' WHERE c.kind='dm'")}
+    return excluded
+
+
+_MEMBER_BY_IDS_SQL = (
+    "SELECT m.user_id, m.username, m.first_name, m.last_name, m.is_bot, "
+    "m.collected_at, m.source_group, m.deleted, m.access_hash, m.dm_block "
+    "FROM members m JOIN json_each(?) j ON m.user_id = j.value"
+)
+
+
+def _fetch_rows(conn, ids):
+    """Строки members для набора user_id в переданном порядке, в порядке _MEMBER_COLUMNS."""
+    ids = list(ids)
+    if not ids:
+        return []
+    by_id = {}
+    for start in range(0, len(ids), 900):
+        chunk = ids[start:start + 900]
+        for row in conn.execute(_MEMBER_BY_IDS_SQL, (json.dumps(chunk),)):
+            by_id[row["user_id"]] = row
+    return [by_id[uid] for uid in ids if uid in by_id]
+
+
+# Кандидат очереди DM со всем, что нужно для отсева без чтения строки таблицы:
+# user_id и collected_at лежат в самой записи индекса, username и first_name
+# читаются только для 1000-строчных окон.
+_CANDIDATE_SQL = (
+    "SELECT m.user_id, m.username, m.first_name, m.access_hash, m.collected_at "
+    "FROM members m INDEXED BY idx_members_dm_collected "
+    "WHERE m.is_bot=0 AND COALESCE(m.deleted, 0)=0 AND COALESCE(m.dm_block, '')='' "
+    # Встроенные проверки: NOT GLOB сравнивает сырой текст, без LOWER на строку.
+    "AND COALESCE(m.username, '') NOT GLOB '*[0-9][0-9][0-9][0-9]' "
+    "AND COALESCE(m.first_name, '') NOT GLOB '*@[A-Za-z0-9_]*[bB][oO][tT]*' "
+    "AND COALESCE(m.first_name, '') NOT GLOB '*[tT].[mM][eE]/*'"
+)
+
+
+def candidate_ids(conn):
+    """Курсор кандидатов очереди по частичному индексу в порядке collected_at."""
+    return conn.execute(_CANDIDATE_SQL + " ORDER BY m.collected_at")
+
+
+def dm_targets(conn, group_id=None, repeat_ok=False, limit=None, shuffle=False):
+    """Очередь DM: боты, удалённые, без адреса, dm_block, blacklist и прошлые DM исключены.
+
+    Пустой профиль с username или access_hash остаётся: его можно адресовать.
+    Имена людей, внутри которых есть буквы bot (Subbotina, Rabota), не отсекаются.
+    shuffle=True — случайная выборка из всей базы: пачка не липнет к одному
+    времени сбора (и одной группе), и свежие люди попадают в неё наравне.
+
+    Отбор идёт по кандидатам индекса (5 колонок на 12.6 тыс. строк — ~18 мс),
+    и LIMIT срабатывает внутри этого прохода. Полные строки members читаются
+    только для отобранных id: на круг conduct --limit 200 очередь стоит ~1 мс
+    против ~62 мс, когда весь предикат dm_eligible_where шёл в SQL одним
+    запросом. Результат при том же наборе строк тот же — это сверяет
+    test_dm_queue_matches_sql_predicate.
+    """
+    excluded = _dm_excluded_users(conn, repeat_ok)
+    if group_id:
+        # Фильтр по группе остаётся в SQL: он сужает выборку сильнее всего.
+        # Всё остальное — тот же двухэтапный отбор, что и без группы.
+        group_sql = (
+            " AND m.user_id IN "
+            "(SELECT user_id FROM member_sources WHERE group_id=?) "
+            "ORDER BY m.collected_at"
+        )
+        keep = []
+        for row in conn.execute(_CANDIDATE_SQL + group_sql, (group_id,)):
+            if row[0] in excluded or not _dm_candidate_ok(row):
+                continue
+            keep.append(row)
+            if limit and not shuffle and len(keep) >= limit:
+                break
+    else:
+        keep = []
+        for row in candidate_ids(conn):
+            if row[0] in excluded or not _dm_candidate_ok(row):
+                continue
+            keep.append(row)
+            if limit and not shuffle and len(keep) >= limit:
+                break
+    if shuffle and limit:
+        # Случайные цели: выборка из всех кандидатов, а не из первых по времени сбора.
+        keep = random.sample(keep, min(limit, len(keep)))
+    rows = _fetch_rows(conn, [row[0] for row in keep])
+    if shuffle:
+        random.shuffle(rows)
+    return rows if not limit else rows[:limit]
+
+
+def recent_ok_targets(conn, kind, hours=24):
+    """Цели, которым успешно писали этого вида за последние N часов (все аккаунты)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    return {str(r["target"]) for r in conn.execute(
+        "SELECT DISTINCT s.target FROM sent s JOIN campaigns c ON c.id=s.campaign "
+        "WHERE c.kind=? AND s.status='ok' AND s.ts>=?", (kind, cutoff))}
 
 
 # --------------------------------------------- эффективность рассылки
@@ -1308,6 +2055,20 @@ def interleave_targets(rows, limit=None):
         if queue:
             queues.append(queue)
     return out
+
+
+def campaign_stats(conn, hours=168):
+    """Итог за период по видам: ok / fail / skip / total. Основа для оценки."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat(timespec="seconds")
+    rows = conn.execute(
+        "SELECT c.kind AS kind,"
+        " SUM(CASE WHEN s.status='ok' THEN 1 ELSE 0 END) AS ok,"
+        " SUM(CASE WHEN s.status LIKE 'fail:%' THEN 1 ELSE 0 END) AS fail,"
+        " SUM(CASE WHEN s.status LIKE 'skip:%' THEN 1 ELSE 0 END) AS skip,"
+        " COUNT(*) AS total"
+        " FROM sent s JOIN campaigns c ON c.id=s.campaign"
+        " WHERE s.ts>=? GROUP BY c.kind ORDER BY c.kind", (cutoff,)).fetchall()
+    return [dict(row) for row in rows]
 
 
 async def deliver_once(client, media, peer, body, no_preview=False):
@@ -1551,6 +2312,13 @@ async def resolve_source(client, source, dialogs=None):
         sys.exit(f"источник {source} недоступен: {type(exc).__name__}: {str(exc)[:120]}")
 
 
+def _campaign_ok_count(conn, camp):
+    if camp is None:
+        return 0
+    row = conn.execute("SELECT COUNT(*) c FROM sent WHERE campaign=? AND status='ok'", (camp,)).fetchone()
+    return int(row["c"]) if row else 0
+
+
 async def cmd_broadcast(args):
     account = args.account
     conn = connect()
@@ -1622,6 +2390,41 @@ async def _attach_sources(players, source):
                     await removed["client"].disconnect()
                 except Exception:
                     pass
+
+
+def message_id(sent):
+    """id отправленного сообщения (Telethon Message/Updates/list) или None.
+
+    Нужен, чтобы потом сопоставить ответ человека с конкретной отправкой:
+    без этого «доставка» остаётся только «API принял»."""
+    if isinstance(sent, (list, tuple)):
+        for item in sent:
+            found = message_id(item)
+            if found is not None:
+                return found
+        return None
+    for attr in ("id", "msg_id"):
+        value = getattr(sent, attr, None)
+        if isinstance(value, int):
+            return value
+    msg = getattr(sent, "message", None)
+    if msg is not None:
+        value = getattr(msg, "id", None)
+        if isinstance(value, int):
+            return value
+    upd = getattr(sent, "updates", None)
+    if upd:
+        for item in upd:
+            for attr in ("id", "msg_id"):
+                value = getattr(item, attr, None)
+                if isinstance(value, int):
+                    return value
+            nested = getattr(item, "message", None)
+            if nested is not None:
+                value = getattr(nested, "id", None)
+                if isinstance(value, int):
+                    return value
+    return None
 
 
 def apply_forward_mode(args, conn):
@@ -2054,6 +2857,15 @@ def media_kind(mime):
     if mime.startswith("video/"):
         return "video"
     return "file"
+
+
+def register_media(conn, account, msg_id, path_str, kind, title, mime, size):
+    cur = conn.execute(
+        "INSERT INTO media(account,msg_id,kind,title,mime,size,path,added_at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (account, msg_id, kind, title, mime or "", size, path_str, now_iso()))
+    conn.commit()
+    return cur.lastrowid
 
 
 def resolve_media(conn, value):
@@ -3386,7 +4198,6 @@ async def cmd_conduct_both(args):
     """
     conn = connect()
     players = {}
-    refresh_task = None
     try:
         forward_ids_ = apply_forward_mode(args, conn)
         media = None if forward_ids_ else resolve_media(conn, getattr(args, "media", None))
@@ -3394,31 +4205,52 @@ async def cmd_conduct_both(args):
         opt_out = bool(getattr(args, "opt_out", True))
         names = args.accounts or [r["name"] for r in conn.execute(
             "SELECT name FROM accounts WHERE enabled=1 ORDER BY name")]
+        from telethon.tl.types import Chat, Channel
 
-        opened = await fanout(list(names), _open_conduct_account)
-        for name, client, me in opened:
-            if client is None:
-                continue
-            conn.execute("UPDATE accounts SET user_id=? WHERE name=?", (me.id, name))
-            arow = conn.execute(
-                "SELECT daily_budget, broadcast_budget, flood_until, COALESCE(spam_strikes,0) "
-                "strikes FROM accounts WHERE name=?", (name,)).fetchone()
-            bcap = (arow["broadcast_budget"] if arow and arow["broadcast_budget"] is not None else 15)
-            draw = arow["daily_budget"] if arow else None
-            dcap = account_dm_cap(conn, name, draw)
-            bused = today_broadcast_sent(conn, name)
-            dused = today_dm_sent(conn, name)
-            players[name] = {
-                "client": client, "me": me.id,
-                "broadcast_budget": bcap, "broadcast_used": bused,
-                "dm_budget": dcap, "dm_used": dused,
-                "flood_until": arow["flood_until"] if arow else None,
-                "dm_halt_until": None, "held_dm": set(),
-                "spam_strikes": arow["strikes"] if arow else 0,
-                "budget": bcap, "used": bused,
-            }
-            print(f"  игрок «{name}» (id={me.id}): группы {bused}/{bcap or '∞'}, "
-                  f"личные {dused}/{dcap or '∞'}")
+        for name in names:
+            client = None
+            try:
+                client = get_client(name, allow_flood=True)
+                await client.connect()
+                if not await client.is_user_authorized():
+                    print(f"  пропуск «{name}»: сессия не авторизована — login --account {name}")
+                    await client.disconnect()
+                    continue
+                me = await client.get_me()
+                conn.execute("UPDATE accounts SET user_id=? WHERE name=?", (me.id, name))
+                arow = conn.execute(
+                    "SELECT daily_budget, broadcast_budget, flood_until, COALESCE(spam_strikes,0) "
+                    "strikes FROM accounts WHERE name=?", (name,)).fetchone()
+                bcap = (arow["broadcast_budget"] if arow and arow["broadcast_budget"] is not None else 15)
+                draw = arow["daily_budget"] if arow else None
+                dcap = account_dm_cap(conn, name, draw)
+                bused = today_broadcast_sent(conn, name)
+                dused = today_dm_sent(conn, name)
+                players[name] = {
+                    "client": client, "me": me.id,
+                    "broadcast_budget": bcap, "broadcast_used": bused,
+                    "dm_budget": dcap, "dm_used": dused,
+                    "flood_until": arow["flood_until"] if arow else None,
+                    "dm_halt_until": None, "held_dm": set(),
+                    "spam_strikes": arow["strikes"] if arow else 0,
+                    "budget": bcap, "used": bused,
+                }
+                print(f"  игрок «{name}» (id={me.id}): группы {bused}/{bcap or '∞'}, "
+                      f"личные {dused}/{dcap or '∞'}")
+            except SystemExit as exc:
+                if client is not None and name not in players:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                print(f"  пропуск «{name}»: {exc}")
+            except Exception as exc:
+                if client is not None and name not in players:
+                    try:
+                        await client.disconnect()
+                    except Exception:
+                        pass
+                print(f"  пропуск «{name}»: {type(exc).__name__}: {str(exc)[:80]}")
         conn.commit()
         if not players:
             sys.exit("Ни один аккаунт не подключён — login --account NAME")
@@ -3456,46 +4288,36 @@ async def cmd_conduct_both(args):
                     player["dm_halt_until"] = None
                     player["held_dm"].clear()
 
-        async def pull_dialogs():
+        async def refresh_edges(force):
             nonlocal dialogs_at
-
-            async def safe(item):
-                name = item[0]
+            if not force and dialogs_at is not None and (time.monotonic() - dialogs_at) < DIALOG_REFRESH_SECONDS:
+                return
+            for name, player in players.items():
                 try:
-                    return await _load_account_dialogs(item)
+                    if not player["client"].is_connected():
+                        await player["client"].connect()
+                    dialogs = await player["client"].get_dialogs()
                 except Exception as exc:
                     print(f"  диалоги «{name}» не обновлены: {type(exc).__name__}: {str(exc)[:80]}")
-                    return name, None
-
-            loaded = await fanout(list(players.items()), safe)
-            for name, dialogs in loaded:
-                if dialogs is None:
                     continue
-                store_dialog_coverage(
-                    conn, name, dialogs, dry_run=bool(args.dry_run), edges=edges, emaps=emaps)
+                emaps[name] = {
+                    d.entity.id: d.entity for d in dialogs if isinstance(d.entity, (Chat, Channel))
+                }
+                writable = set()
+                for gid, ent in emaps[name].items():
+                    can, why = classify_broadcast(ent)
+                    if can:
+                        writable.add(gid)
+                        if args.dry_run:
+                            record_edge(conn, name, gid)
+                        else:
+                            apply_write_edge(conn, name, gid, True, "")
+                    else:
+                        apply_write_edge(conn, name, gid, False, why)
+                edges[name] = writable
+                print(f"  покрытие «{name}»: диалогов {len(emaps[name])}, можно писать {len(writable)}")
             dialogs_at = time.monotonic()
             conn.commit()
-
-        def _note_refresh(task):
-            if task.cancelled():
-                return
-            exc = task.exception()
-            if exc is not None:
-                print(f"  диалоги не обновлены: {type(exc).__name__}: {str(exc)[:80]}")
-
-        async def refresh_edges():
-            nonlocal refresh_task
-            age = 0.0 if dialogs_at is None else time.monotonic() - dialogs_at
-            inflight = refresh_task is not None and not refresh_task.done()
-            mode = dialog_refresh_mode(
-                dialogs_at is not None, bool(args.dry_run), age, inflight=inflight)
-            if mode == "skip":
-                return
-            if mode == "background":
-                refresh_task = asyncio.create_task(pull_dialogs())
-                refresh_task.add_done_callback(_note_refresh)
-                return
-            await pull_dialogs()
 
         def load_targets(now):
             recent = set() if args.repeat_ok else recent_ok_targets(conn, "broadcast", 24)
@@ -3531,7 +4353,7 @@ async def cmd_conduct_both(args):
                 return 0
             now = datetime.now(timezone.utc)
             refresh_caps()
-            await refresh_edges()
+            await refresh_edges(force=dialogs_at is None or args.dry_run)
             groups, people = load_targets(now)
             gplan, g_unplanned = assign_targets(
                 "broadcast", groups, _player_view(players, "broadcast", now), edges)
@@ -3789,12 +4611,6 @@ async def cmd_conduct_both(args):
                 break
         return total_sent
     finally:
-        if refresh_task is not None and not refresh_task.done():
-            refresh_task.cancel()
-            try:
-                await refresh_task
-            except (asyncio.CancelledError, Exception):
-                pass
         for player in players.values():
             try:
                 await player["client"].disconnect()
@@ -3821,30 +4637,51 @@ async def cmd_conduct(args):
         opt_out = bool(getattr(args, "opt_out", True))
         names = args.accounts or [r["name"] for r in conn.execute(
             "SELECT name FROM accounts WHERE enabled=1 ORDER BY name")]
+        from telethon.tl.types import Chat, Channel
 
-        opened = await fanout(list(names), _open_conduct_account)
-        for name, client, me in opened:
-            if client is None:
-                continue
-            conn.execute("UPDATE accounts SET user_id=? WHERE name=?", (me.id, name))
-            arow = conn.execute(
-                "SELECT daily_budget, broadcast_budget, flood_until FROM accounts WHERE name=?",
-                (name,)).fetchone()
-            if kind == "dm":
-                raw = arow["daily_budget"] if arow else None
-                budget = account_dm_cap(conn, name, raw)
-                used = today_dm_sent(conn, name)
-            else:
-                budget = (arow["broadcast_budget"] if arow and arow["broadcast_budget"] is not None
-                          else 15)
-                used = today_broadcast_sent(conn, name)
-            players[name] = {"client": client, "me": me.id, "budget": budget, "used": used,
-                             "flood_until": arow["flood_until"] if arow else None}
-            rem = cooldown_remaining(players[name])
-            cap_label = players[name]["budget"] or "∞"
-            print(f"  игрок «{name}» (id={me.id}): "
-                  + (f"пауза ещё {rem} c" if rem else "готов")
-                  + f", {kind} сегодня {players[name]['used']}/{cap_label}")
+        for n in names:
+            c = None
+            try:
+                c = get_client(n, allow_flood=True)  # cooldown'ами рулит дирижёр
+                await c.connect()
+                if not await c.is_user_authorized():
+                    print(f"  пропуск «{n}»: сессия не авторизована — login --account {n}")
+                    await c.disconnect()
+                    continue
+                me = await c.get_me()
+                conn.execute("UPDATE accounts SET user_id=? WHERE name=?", (me.id, n))
+                arow = conn.execute(
+                    "SELECT daily_budget, broadcast_budget, flood_until FROM accounts WHERE name=?",
+                    (n,)).fetchone()
+                if kind == "dm":
+                    raw = arow["daily_budget"] if arow else None
+                    budget = account_dm_cap(conn, n, raw)
+                    used = today_dm_sent(conn, n)
+                else:
+                    budget = (arow["broadcast_budget"] if arow and arow["broadcast_budget"] is not None
+                              else 15)
+                    used = today_broadcast_sent(conn, n)
+                players[n] = {"client": c, "me": me.id, "budget": budget, "used": used,
+                              "flood_until": arow["flood_until"] if arow else None}
+                rem = cooldown_remaining(players[n])
+                cap_label = players[n]["budget"] or "∞"
+                print(f"  игрок «{n}» (id={me.id}): "
+                      + (f"пауза ещё {rem} c" if rem else "готов")
+                      + f", {kind} сегодня {players[n]['used']}/{cap_label}")
+            except SystemExit as e:
+                if c is not None and n not in players:
+                    try:
+                        await c.disconnect()
+                    except Exception:
+                        pass
+                print(f"  пропуск «{n}»: {e}")
+            except Exception as e:
+                if c is not None and n not in players:
+                    try:
+                        await c.disconnect()
+                    except Exception:
+                        pass
+                print(f"  пропуск «{n}»: {type(e).__name__}: {str(e)[:80]}")
         conn.commit()
         if not players:
             sys.exit("Ни один аккаунт не подключён — login --account NAME")
@@ -3865,10 +4702,25 @@ async def cmd_conduct(args):
         edges = {}
         if kind == "broadcast":
             emaps = {}
-            loaded = await fanout(list(players.items()), _load_account_dialogs)
-            for name, dialogs in loaded:
-                store_dialog_coverage(
-                    conn, name, dialogs, dry_run=bool(args.dry_run), edges=edges, emaps=emaps)
+            for n, p in players.items():
+                dialogs = await p["client"].get_dialogs()
+                emaps[n] = {d.entity.id: d.entity for d in dialogs
+                            if isinstance(d.entity, (Chat, Channel))}
+                writable = set()
+                for gid, ent in emaps[n].items():
+                    can, why = classify_broadcast(ent)
+                    if can:
+                        writable.add(gid)
+                        if args.dry_run:
+                            # Сухой прогон не возвращает чат в рассылку. Новую строку
+                            # покрытия запоминаем, уже записанный can_write=0 не затираем.
+                            record_edge(conn, n, gid)
+                        else:
+                            apply_write_edge(conn, n, gid, True, "")
+                    else:
+                        apply_write_edge(conn, n, gid, False, why)
+                edges[n] = writable
+                print(f"  покрытие «{n}»: диалогов {len(emaps[n])}, можно писать {len(writable)}")
             conn.commit()
             q = "SELECT * FROM groups WHERE active=1 AND in_broadcast=1"
             prm = []

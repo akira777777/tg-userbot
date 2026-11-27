@@ -42,8 +42,8 @@ class RateLimiter:
         """
         if tokens <= 0:
             return True
-        async with self._lock:
-            while True:
+        while True:
+            async with self._lock:
                 self._refill()
                 if self._tokens >= tokens:
                     self._tokens -= tokens
@@ -51,7 +51,8 @@ class RateLimiter:
                 if not block:
                     return False
                 shortfall = tokens - self._tokens
-                await asyncio.sleep(shortfall * self.period / self.max_rate)
+                delay = shortfall * self.period / self.max_rate
+            await asyncio.sleep(delay)
 
     async def __aenter__(self) -> "RateLimiter":
         await self.acquire()

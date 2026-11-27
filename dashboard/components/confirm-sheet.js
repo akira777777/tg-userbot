@@ -46,6 +46,7 @@ export default function ConfirmSheet({
         ref={dialogRef}
         onClick={(event) => event.stopPropagation()}
       >
+        <span className="sheet-handle" aria-hidden="true" />
         <p className="sheet-kicker">{kicker}</p>
         <h3 id="confirm-title">Отправить в Telegram?</h3>
         <p className="hint" id="confirm-desc">

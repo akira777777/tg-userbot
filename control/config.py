@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class ConfigurationError(ValueError):
@@ -76,7 +79,9 @@ class ControlSettings:
 
     @classmethod
     def from_environment(cls) -> ControlSettings:
-        load_dotenv()
+        # Как bot.py: только sibling .env репозитория, не cwd/родитель.
+        env_file = Path(os.environ.get("USERBOT_ENV", ROOT / ".env"))
+        load_dotenv(env_file, override=False)
         mini_app_url = _required("MINI_APP_URL")
         parsed = urlparse(mini_app_url)
         if parsed.scheme != "https" or not parsed.netloc:

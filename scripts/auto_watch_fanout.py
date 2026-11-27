@@ -1,20 +1,22 @@
 """Отложенный fanout watch: ждёт истечения всех flood_until в БД, затем POST /api/fanout {action: watch}.
 
-Использование: C:/Users/novra/AppData/Local/Python/pythoncore-3.14-64/python.exe scripts/auto_watch_fanout.py
-Работает из корня проекта (userbot.db и панель на 127.0.0.1:8642).
+Использование: python scripts/auto_watch_fanout.py
+Работает из корня проекта (userbot.db и панель на 127.0.0.1:${WEBBOT_PORT:-8642}).
 """
 
+import http.client
 import json
+import os
 import sqlite3
 import sys
 import time
-import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DB = ROOT / "userbot.db"
-PANEL = "http://127.0.0.1:8642"
+DB = Path(os.environ.get("USERBOT_DB", ROOT / "userbot.db"))
+PANEL_HOST = "127.0.0.1"
+PANEL_PORT = int(os.environ.get("WEBBOT_PORT", "8642"))
 BUFFER_SECONDS = 180  # +3 минуты после самого позднего cooldown
 
 
@@ -32,14 +34,17 @@ def latest_flood_until() -> datetime | None:
 
 
 def fanout_watch() -> dict:
-    req = urllib.request.Request(
-        PANEL + "/api/fanout",
-        data=json.dumps({"action": "watch"}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    body = json.dumps({"action": "watch"}).encode("utf-8")
+    conn = http.client.HTTPConnection(PANEL_HOST, PANEL_PORT, timeout=60)
+    try:
+        conn.request("POST", "/api/fanout", body=body, headers={"Content-Type": "application/json"})
+        resp = conn.getresponse()
+        raw = resp.read().decode("utf-8")
+        if resp.status >= 400:
+            raise RuntimeError(f"HTTP {resp.status}: {raw[:200]}")
+        return json.loads(raw)
+    finally:
+        conn.close()
 
 
 def main() -> int:
@@ -48,13 +53,14 @@ def main() -> int:
     if target is None:
         print(f"[{now.isoformat(timespec='seconds')}] штрафов нет — запуск через 30 с")
         target = now
-        wait = 30
+        wait = 30.0
     else:
         wait = (target - now).total_seconds() + BUFFER_SECONDS
         print(f"[{now.isoformat(timespec='seconds')}] самый поздний cooldown: {target.isoformat()}")
     if wait < 30:
-        wait = 30
-    print(f"жду {int(wait)} с (до ~{(now.timestamp() + wait) * 1000})", flush=True)
+        wait = 30.0
+    wake_at = (now + timedelta(seconds=wait)).isoformat(timespec="seconds")
+    print(f"жду {int(wait)} с (до {wake_at})", flush=True)
     deadline = time.monotonic() + wait
     while True:
         left = deadline - time.monotonic()

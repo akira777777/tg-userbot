@@ -1,11 +1,11 @@
-.PHONY: help install test lint format run worker controller healthcheck docker-build docker-up docker-down clean
+.PHONY: help install test lint format run worker controller healthcheck panel docker-build docker-up docker-down clean
 
 PYTHON ?= python
 PYTEST ?= py -3.15 -m pytest
 SOURCES = bot.py cloud.py web.py control tests scripts
 
 help:
-	@echo "tg-userbot targets: install test lint format run worker controller healthcheck docker-build docker-up docker-down"
+	@echo "tg-userbot targets: install test lint format run worker controller healthcheck panel docker-build docker-up docker-down"
 
 install:
 	$(PYTHON) -m pip install -e ".[dev]"
@@ -21,6 +21,9 @@ controller:
 
 healthcheck:
 	$(PYTHON) scripts/healthcheck.py --db userbot.db
+
+panel:
+	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start_panel.ps1
 
 test:
 	$(PYTEST) tests/ --cov=control --cov=bot --cov=cloud --cov-report=term-missing

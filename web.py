@@ -13,6 +13,7 @@ DB-задачи (export/status/blacklist/accounts) идут в отдельны�
 import asyncio
 import collections
 import json
+import logging
 import os
 import re
 import signal
@@ -35,6 +36,8 @@ DB = Path(os.environ.get("USERBOT_DB", ROOT / "userbot.db"))
 MEDIA_DIR = ROOT / "media_cache"
 LOG_DIR = ROOT / "logs"
 LOG_FILE = LOG_DIR / "web.log"
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_TAIL_BYTES = 128 * 1024
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("WEBBOT_PORT", "8642"))
 PY = sys.executable
@@ -85,6 +88,9 @@ class Bus:
                 self.subs.discard(q)
         try:
             LOG_DIR.mkdir(exist_ok=True)
+            if LOG_FILE.exists() and LOG_FILE.stat().st_size >= LOG_MAX_BYTES:
+                backup = LOG_FILE.with_name(LOG_FILE.name + ".1")
+                os.replace(LOG_FILE, backup)
             with open(LOG_FILE, "a", encoding="utf-8") as f:
                 f.write(f"{ev['ts']} [{ev.get('account','web')}] {ev.get('type','')} "
                         f"{ev.get('text','')}\n")
@@ -115,11 +121,19 @@ _LOG_LINE = re.compile(r"^(\d\d:\d\d:\d\d) \[([^\]]+)\] (\S+)\s?(.*)$")
 
 
 def _seed_log_buffer():
-    """Показать хвост журнала после перезапуска панели, не дописывая файл."""
+    """Показать хвост журнала после перезапуска панели, не читая весь файл в память."""
     if not LOG_FILE.exists():
         return
     try:
-        lines = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+        with open(LOG_FILE, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            start = max(0, size - LOG_TAIL_BYTES)
+            fh.seek(start)
+            raw = fh.read()
+        lines = raw.decode("utf-8", errors="replace").splitlines()
+        if start > 0 and lines:
+            lines = lines[1:]  # первая строка могла быть обрезана посередине
     except OSError:
         return
     for line in lines[-400:]:
@@ -301,10 +315,11 @@ async def run_job(args, label, account, slot, extra_slots=None):
                 await SLOT_LOCKS.release(got)
             BUS.publish({"type": "done", "account": account, "job": label,
                          "text": f"■ слот занят ({label} @ {name})"})
-            for name in slots:
-                job = BUS.jobs.get(name)
-                if job and job.get("name") == label:
-                    BUS.jobs.pop(name, None)
+            async with RUN_LOCK:
+                for slot_name in slots:
+                    job = BUS.jobs.get(slot_name)
+                    if job and job.get("name") == label:
+                        BUS.jobs.pop(slot_name, None)
             return
         held.append(name)
     try:
@@ -433,6 +448,7 @@ def read_state():
                           "mime": m["mime"], "size": m["size"], "msg_id": m["msg_id"],
                           "ok": bool(m["path"] and os.path.exists(m["path"])),
                           "account": m["account"]})
+        dm_available_sql = "SELECT COUNT(*) FROM members m WHERE " + DM_ELIGIBLE_WHERE  # nosec B608
         return {
             "db": str(DB), "now": now_iso(), "boot": BOOT,
             "cloud_last": _read_cloud_marker(),
@@ -450,9 +466,7 @@ def read_state():
             "bots": c("SELECT COUNT(*) FROM members WHERE is_bot=1"),
             "blacklist": c("SELECT COUNT(*) FROM blacklist"),
             "campaigns": c("SELECT COUNT(*) FROM campaigns"),
-            "dm_available": c(
-                "SELECT COUNT(*) FROM members m WHERE " + DM_ELIGIBLE_WHERE  # nosec B608
-            ),
+            "dm_available": c(dm_available_sql),
             "group_rows": groups,
             "last_campaigns": [dict(r) for r in con.execute(
                 "SELECT c.id,c.kind,c.account,c.text,substr(c.created_at,1,16) created_at, "
@@ -646,7 +660,6 @@ def build_app():
 def main():
     # косметика CPython 3.14/Windows: при разрыве SSE-соединений proactor-цикл
     # печатает безобидный ConnectionResetError в exception handler — глушим только его
-    import logging
     class _NoiseFilter(logging.Filter):
         def filter(self, rec):
             exc = rec.exc_info[1] if rec.exc_info and len(rec.exc_info) > 1 else None

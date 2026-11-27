@@ -161,7 +161,11 @@ class UserbotRuntime:
             return await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError:
             await _terminate_proc(proc)
-            return b"", b"timeout"
+            try:
+                leftover = await asyncio.wait_for(proc.communicate(), timeout=2)
+                return leftover[0] or b"", leftover[1] or b"timeout"
+            except (TimeoutError, Exception):
+                return b"", b"timeout"
 
     def _redact(self, text: str, *, max_len: int = 2000, keep_tail: bool = False) -> str:
         cleaned = text or ""

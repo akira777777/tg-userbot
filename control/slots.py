@@ -7,6 +7,16 @@ import os
 import re
 from pathlib import Path
 
+try:
+    import msvcrt
+except ImportError:  # POSIX
+    msvcrt = None  # type: ignore[assignment]
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
+
 _SAFE_SLOT = re.compile(r"^[a-z0-9_\-]{1,64}$")
 
 
@@ -96,21 +106,21 @@ class SlotLocker:
 
 def _lock_nb(handle) -> None:
     if os.name == "nt":
-        import msvcrt
-
+        if msvcrt is None:
+            raise OSError("msvcrt unavailable")
         msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
         return
-    import fcntl
-
+    if fcntl is None:
+        raise OSError("fcntl unavailable")
     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 def _unlock(handle) -> None:
     if os.name == "nt":
-        import msvcrt
-
+        if msvcrt is None:
+            raise OSError("msvcrt unavailable")
         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
         return
-    import fcntl
-
+    if fcntl is None:
+        raise OSError("fcntl unavailable")
     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

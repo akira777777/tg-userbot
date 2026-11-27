@@ -64,7 +64,7 @@ tg-userbot-control = "control.main:main"
 py-modules = ["bot", "cloud", "web"]
 
 [tool.setuptools.packages.find]
-include = ["control*", "tguserbot*"]
+include = ["control*"]
 
 [tool.black]
 line-length = 120

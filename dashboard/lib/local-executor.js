@@ -10,6 +10,40 @@ import { spawn } from "node:child_process";
  */
 
 const MAX_OUTPUT = 4000;
+const MAX_BUFFER = 65536;
+const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
+
+function appendTail(current, chunk) {
+  const next = current + chunk;
+  return next.length > MAX_BUFFER ? next.slice(-MAX_BUFFER) : next;
+}
+
+function executionTimeoutMs() {
+  const raw = Number(process.env.LOCAL_EXEC_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+}
+
+function killProcessTree(proc) {
+  if (!proc) return false;
+  if (process.platform === "win32" && proc.pid) {
+    try {
+      const killer = spawn(/*turbopackIgnore: true*/ "taskkill", ["/PID", String(proc.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      killer.unref?.();
+      return true;
+    } catch {
+      // fallback ниже
+    }
+  }
+  try {
+    proc.kill();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** argv для bot.py по тем же правилам, что build_control_cli в control/cli_argv.py. */
 export function buildLocalArgv(kind, mode, account, payload = {}) {
@@ -106,31 +140,49 @@ export function localRunCommand({ id, kind, mode, account, payload }) {
   if (!argv) {
     return Promise.resolve({ ok: false, output: `неподдерживаемая команда: ${kind}`, errorCode: "failed" });
   }
-  const root = path.resolve(process.cwd(), "..");
-  const proc = spawn(pythonCommand(), ["bot.py", ...argv], {
+  const root = path.resolve(/*turbopackIgnore: true*/ process.cwd(), "..");
+  const proc = spawn(/*turbopackIgnore: true*/ pythonCommand(), ["bot.py", ...argv], {
     cwd: root,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PYTHONIOENCODING: "utf-8" },
   });
   running.set(id, proc);
 
   let stdout = "";
   let stderr = "";
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    killProcessTree(proc);
+  }, executionTimeoutMs());
+  timer.unref?.();
+
   proc.stdout.on("data", (chunk) => {
-    stdout += chunk.toString("utf8");
+    stdout = appendTail(stdout, chunk.toString("utf8"));
   });
   proc.stderr.on("data", (chunk) => {
-    stderr += chunk.toString("utf8");
+    stderr = appendTail(stderr, chunk.toString("utf8"));
   });
 
   return new Promise((resolve) => {
     proc.on("error", (error) => {
+      clearTimeout(timer);
       running.delete(id);
       resolve({ ok: false, output: String(error?.message || error), errorCode: "failed" });
     });
     proc.on("close", (code) => {
+      clearTimeout(timer);
       running.delete(id);
       const tail = (stdout + (stderr ? `\n${stderr}` : "")).slice(-MAX_OUTPUT);
+      if (timedOut) {
+        resolve({
+          ok: false,
+          output: tail || "превышен таймаут выполнения команды",
+          errorCode: "timeout",
+        });
+        return;
+      }
       resolve({
         ok: code === 0,
         output: tail,
@@ -143,12 +195,7 @@ export function localRunCommand({ id, kind, mode, account, payload }) {
 export function localCancelRun(id) {
   const proc = running.get(id);
   if (!proc) return false;
-  try {
-    proc.kill();
-  } catch {
-    return false;
-  }
-  return true;
+  return killProcessTree(proc);
 }
 
 function classifyLocalError(text, code) {

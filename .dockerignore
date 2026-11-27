@@ -132,6 +132,7 @@ desktop.ini
 # --- Documentation, Markdown & Deployment Specs ---
 docs/
 *.md
+!README.md
 РУКОВОДСТВО.md
 docker-compose*.yml
 Dockerfile*

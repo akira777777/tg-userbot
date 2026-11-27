@@ -10,6 +10,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 import bot
+from control.slots import SlotLocker
 import web
 
 
@@ -125,8 +126,12 @@ async def test_windows_stop_uses_taskkill(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_panel_job_starts_its_own_session_on_posix(monkeypatch):
+async def test_panel_job_starts_its_own_session_on_posix(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "_windows", lambda: False)
+    monkeypatch.setattr(web, "LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(web, "LOG_FILE", tmp_path / "logs" / "web.log")
+    monkeypatch.setattr(web, "SLOT_LOCKS", SlotLocker(tmp_path / "locks"))
+    monkeypatch.setattr(web, "BUS", web.Bus())
     captured: dict[str, dict] = {}
 
     class _Stdout:
@@ -153,3 +158,25 @@ async def test_panel_job_starts_its_own_session_on_posix(monkeypatch):
     assert captured["kwargs"]["start_new_session"] is True
     assert captured["kwargs"]["env"]["USERBOT_SLOT_HELD"] == "contract-slot"
     assert "contract-slot" not in web.BUS.jobs
+    assert (tmp_path / "logs" / "web.log").exists()
+
+
+def test_web_log_rotates_and_seeds_tail(tmp_path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    log_file = log_dir / "web.log"
+    monkeypatch.setattr(web, "LOG_DIR", log_dir)
+    monkeypatch.setattr(web, "LOG_FILE", log_file)
+    monkeypatch.setattr(web, "LOG_MAX_BYTES", 120)
+    monkeypatch.setattr(web, "LOG_TAIL_BYTES", 100)
+    monkeypatch.setattr(web, "BUS", web.Bus())
+
+    for idx in range(6):
+        web.BUS.publish({"type": "log", "account": "main", "text": f"line-{idx}-" + ("x" * 30)})
+
+    assert (log_dir / "web.log.1").exists()
+    assert log_file.exists()
+
+    web.BUS = web.Bus()
+    web._seed_log_buffer()
+    assert len(web.BUS.buffer) >= 1
+    assert any("line-5-" in ev["text"] for ev in web.BUS.buffer)

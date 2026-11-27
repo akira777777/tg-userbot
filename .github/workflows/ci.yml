@@ -55,6 +55,7 @@ jobs:
   docker:
     runs-on: ubuntu-latest
     needs: [python, dashboard]
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -63,6 +64,9 @@ jobs:
           context: .
           target: prod
           push: false
+          load: true
           tags: tg-userbot:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Smoke-test the built image
+        run: docker run --rm --entrypoint python tg-userbot:test -c "import control.main; print('image imports OK')"

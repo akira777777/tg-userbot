@@ -159,7 +159,7 @@ export default function CommandTimeline({
   }, [commands, filter]);
 
   return (
-    <section className="panel" id="queue" aria-labelledby="queue-title" style={{ scrollMarginTop: 16 }}>
+    <section className="panel" id="queue" aria-labelledby="queue-title">
       <div className="panel-head">
         <h2 id="queue-title">Очередь команд</h2>
         {counts.active > 0 && <span className="chip info">{counts.active} в работе</span>}
@@ -195,7 +195,12 @@ export default function CommandTimeline({
           </button>
         </div>
       )}
-      {loading && !commands.length && <div className="skeleton" aria-hidden="true" />}
+      {loading && !commands.length && (
+        <div className="skeleton-group" aria-hidden="true">
+          <div className="skeleton skeleton-row" />
+          <div className="skeleton skeleton-row" />
+        </div>
+      )}
       {!loading && !commands.length && (
         <p className="empty">
           Пока пусто. Выберите сценарий выше: проверка без отправки ничего не отправит.
@@ -213,7 +218,7 @@ export default function CommandTimeline({
           const output = resultOutput(cmd.result_summary);
           const autoOpenOutput = idx === 0 && (READ_KINDS.has(cmd.kind) || cmd.mode === "DRY_RUN");
           return (
-            <li className="event" key={cmd.id}>
+            <li className={`event event-${statusTone(cmd.status)}`} key={cmd.id}>
               <div className="event-top">
                 <span className="event-kind">{commandLabel(cmd.kind)}</span>
                 <span className={`chip ${statusTone(cmd.status)}`}>{STATUS_LABELS[cmd.status] || cmd.status}</span>

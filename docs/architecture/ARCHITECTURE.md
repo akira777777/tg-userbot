@@ -20,6 +20,9 @@ Telegram Mini App -> dashboard server routes -> Supabase command queue
 ## Module responsibilities
 
 - `bot.py` — userbot domain operations, account selection, throttling, sending, local persistence.
+- `tguserbot/` — extracted pure domain helpers and the SQLite persistence layer (budget/pacing
+  math, connection lifecycle, schema, CRUD, DM queue selection, delivery reports); `bot.py`
+  re-exports the names. See ADR-0001.
 - `web.py` — legacy loopback-only operator panel that starts `bot.py` subprocesses (`127.0.0.1:8642`).
 - `cloud.py` — one-way synchronization of reduced operational data.
 - `control/` — authenticated owner command models, policy, queue repository, worker,
@@ -36,6 +39,7 @@ Telegram Mini App -> dashboard server routes -> Supabase command queue
 ```text
 tg-userbot/
 ├── bot.py, web.py, cloud.py     entry points
+├── tguserbot/                   extracted pure helpers + SQLite layer (ADR-0001)
 ├── control/                     Mini App control plane
 ├── dashboard/                   Next.js Mini App
 ├── supabase/schema.sql          mirror + command queue
@@ -77,3 +81,9 @@ budgets, flood pauses, and cross-account deduplication.
 Redis, FastAPI, and a separate PostgreSQL application database are not part of this
 architecture. See [`../plan/mini-app-control-plane.md`](../plan/mini-app-control-plane.md)
 for the design rationale.
+
+## Architecture decision records
+
+Significant or hard-to-reverse decisions are recorded under [`adr/`](adr/README.md):
+package extraction of `bot.py` (ADR-0001), the orphan `src/` package (ADR-0002),
+single packaging source (ADR-0003), and Supabase schema migrations (ADR-0004).

@@ -190,14 +190,14 @@ export default function Home() {
       </header>
 
       {state === "authorizing" && (
-        <>
-          <p className="notice">Загружаю панель…</p>
+        <div className="loading-panel" role="status" aria-live="polite">
+          <p className="loading-label">Загружаю панель…</p>
           <div className="skeleton-group" aria-hidden="true">
+            <div className="skeleton skeleton-tiles" />
             <div className="skeleton" />
-            <div className="skeleton" />
-            <div className="skeleton" />
+            <div className="skeleton skeleton-short" />
           </div>
-        </>
+        </div>
       )}
       {state === "error" && (
         <div className="notice error" role="alert">

@@ -20,10 +20,16 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(bot, "LEGACY_SESSION", str(tmp_path / "sessions" / "main.session"))
     monkeypatch.setattr(bot, "SECRETS_PATH", tmp_path / "account-secrets.json")
     monkeypatch.setattr(bot, "STOP_PATH", tmp_path / "control-stop.json")
+    monkeypatch.setattr(bot, "LOCKS_DIR", tmp_path / "locks")
+    monkeypatch.setattr(bot, "_slot_locker", None)
+    bot._covered_slots.clear()
+    bot._locked_slots.clear()
+    monkeypatch.delenv("USERBOT_SLOT_HELD", raising=False)
     connection = bot.connect()
     try:
         yield connection
     finally:
+        bot.release_account_slots()
         connection.close()
 
 
